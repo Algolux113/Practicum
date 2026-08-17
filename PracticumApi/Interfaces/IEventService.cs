@@ -4,9 +4,14 @@ namespace PracticumApi.Interfaces;
 
 public interface IEventService
 {
-    public List<Event> GetAll();
+    public PaginatedResult<Event> GetAll(
+        string? title = null,
+        DateTime? from = null,
+        DateTime? to = null,
+        int page = 1,
+        int pageSize = 10);
 
-    public Event? Get(int id);
+    public Event Get(int id);
 
     public void Add(Event eventItem);
 
