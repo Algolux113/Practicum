@@ -8,19 +8,21 @@ namespace PracticumApi.Controllers;
 [Route("events")]
 public class EventController(IEventService eventService) : ControllerBase
 {
-    IEventService _eventService = eventService;
+    private readonly IEventService _eventService = eventService;
 
     [HttpGet]
-    public ActionResult<List<Event>> GetAll() => _eventService.GetAll();
+    public ActionResult<PaginatedResult<Event>> GetAll(
+        [FromQuery] string? title = null,
+        [FromQuery] DateTime? from = null,
+        [FromQuery] DateTime? to = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10
+    ) => _eventService.GetAll(title, from, to, page, pageSize);
 
     [HttpGet("{id:int}")]
     public ActionResult<Event> Get(int id)
     {
         var eventItem = _eventService.Get(id);
-
-        if (eventItem == null)
-            return NotFound();
-
         return eventItem;
     }
 
@@ -43,8 +45,6 @@ public class EventController(IEventService eventService) : ControllerBase
     public IActionResult Update(int id, EventDTO eventDTO)
     {
         var existingEvent = _eventService.Get(id);
-        if (existingEvent is null)
-            return NotFound();
         
         existingEvent.Title = eventDTO.Title;
         existingEvent.Description = eventDTO.Description;
@@ -59,13 +59,7 @@ public class EventController(IEventService eventService) : ControllerBase
     [HttpDelete("{id:int}")]
     public IActionResult Delete(int id)
     {
-        var eventItem = _eventService.Get(id);
-
-        if (eventItem is null)
-            return NotFound();
-
         _eventService.Delete(id);
-
         return NoContent();
     }
 }
