@@ -329,7 +329,12 @@ Content-Type: application/json
 
 ## Тестирование
 
-Тесты проверяют, что исключения выбрасываются в правильных сценариях (см. [`EventServiceIntegrationTests`](PracticumTests/EventServiceIntegrationTests.cs)):
+Интеграционные тесты проверяют, что исключения выбрасываются в правильных сценариях:
+
+- [`EventServiceIntegrationTests`](PracticumTests/EventServiceIntegrationTests.cs) — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации).
+- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает `NotFoundException` при создании брони для несуществующего или удалённого события, а также при получении брони по несуществующему ID.
+
+**Примеры из `EventServiceIntegrationTests`:**
 
 ```csharp
 [Fact]
@@ -337,7 +342,7 @@ public void Get_WithInvalidId_ShouldThrowNotFoundException()
 {
     // Arrange
     var eventService = CreateEventService();
-    eventService.Add(new Event { Title = "Event", ... });
+    eventService.Add(new Event { Title = "Event", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
     // Act & Assert
     Assert.Throws<NotFoundException>(() => eventService.Get(Guid.NewGuid()));
@@ -353,12 +358,33 @@ public void GetAll_WithPageZero_ShouldThrowValidationException()
     var ex = Assert.Throws<ValidationException>(() => eventService.GetAll(page: 0));
     Assert.Contains("Номер страницы должен быть больше или равен 1", ex.Message);
 }
+```
+
+**Примеры из `BookingServiceIntegrationTests`:**
+
+> Примечание: `BookingService` принимает `IEventService` в конструкторе, поэтому тесты создают оба сервиса совместно.
+
+```csharp
+[Fact]
+public async Task CreateBookingAsync_ForNonExistentEvent_ShouldThrowNotFoundException()
+{
+    // Arrange
+    var (bookingService, _) = CreateServices();
+
+    // Act & Assert
+    await Assert.ThrowsAsync<NotFoundException>(() =>
+        bookingService.CreateBookingAsync(Guid.NewGuid()));
+}
 
 [Fact]
-public void Get_WithInvalidId_ShouldThrowNotFoundException()
+public async Task Get_WithInvalidId_ShouldThrowNotFoundException()
 {
-    // Пример для BookingService: бронирование с несуществующим ID
-    var bookingService = new BookingService();
+    // Arrange
+    var (bookingService, eventService) = CreateServices();
+    var eventId = CreateEvent(eventService);
+    await bookingService.CreateBookingAsync(eventId);
+
+    // Act & Assert
     Assert.Throws<NotFoundException>(() => bookingService.Get(Guid.NewGuid()));
 }
 ```

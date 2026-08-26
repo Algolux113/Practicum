@@ -16,6 +16,19 @@ dotnet test
 dotnet test --verbosity normal
 ```
 
+### Тестовый проект
+
+Интеграционные тесты находятся в проекте [`PracticumTests`](PracticumTests/PracticumTests.csproj) и используют реальные реализации сервисов (без моков). Состоит из двух классов:
+
+- [`EventServiceIntegrationTests`](PracticumTests/EventServiceIntegrationTests.cs) — покрывает операции `EventService`: создание, получение, обновление, удаление, фильтрацию по названию/датам, пагинацию, а также сценарии ошибок (`NotFoundException`, `ValidationException`).
+- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает операции `BookingService`: создание брони для существующего события, получение по ID, изменение статуса (Confirm/Reject), а также сценарии ошибок (`NotFoundException` при бронировании несуществующего или удалённого события).
+
+В обоих классах тесты разбиты на две группы через `#region`:
+- **Успешные сценарии**;
+- **Неуспешные сценарии**.
+
+Используемые пакеты: `xunit`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`, `Moq`, `coverlet.collector`.
+
 ## Формат ошибок API
 
 Все ошибки возвращаются в единообразном формате JSON (RFC 7807 - Problem Details):
