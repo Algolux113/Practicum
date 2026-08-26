@@ -15,7 +15,8 @@ PracticumApi/
 │   ├── EventService.cs               # Сервис событий выбрасывает исключения
 │   └── BookingService.cs             # Сервис бронирований также выбрасывает исключения
 ├── Controllers/
-│   └── EventController.cs            # Контроллер полагается на middleware
+│   ├── EventController.cs            # Контроллер событий полагается на middleware
+│   └── BookingController.cs          # Контроллер бронирований полагается на middleware
 └── Middlewares/
     └── GlobalExceptionHandlingMiddleware.cs  # Обработка всех исключений
 ```
@@ -65,6 +66,30 @@ public Booking Get(Guid id)
         throw new NotFoundException("Booking", id);
 
     return booking;
+}
+```
+
+**Бронирование несуществующего события** (`CreateBookingAsync`):
+```csharp
+public Task<Booking> CreateBookingAsync(Guid eventId)
+{
+    // Если событие не найдено — EventService.Get выбрасывает NotFoundException
+    _eventService.Get(eventId);
+
+    var booking = Create(new Booking { EventId = eventId });
+
+    return Task.FromResult(booking);
+}
+```
+При вызове `POST /events/{id}/book` с несуществующим `id` middleware вернёт:
+```
+HTTP/1.1 404 Not Found
+
+{
+  "title": "Resource not found",
+  "status": 404,
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/book"
 }
 ```
 

@@ -34,7 +34,7 @@ dotnet test --verbosity normal
 
 | Статус | Название | Описание | Пример сценария |
 |--------|----------|---------|-----------------|
-| **404** | Resource not found | Ресурс не найден | `GET /events/{id}` - событие с указанным GUID не существует |
+| **404** | Resource not found | Ресурс не найден | `GET /events/{id}`, `GET /bookings/{id}` или `POST /events/{id}/book` — объект с указанным GUID не существует |
 | **400** | Validation error | Ошибка валидации данных | `POST /events` с `endAt <= startAt`, `GET /events?page=0` |
 | **500** | Internal server error | Ошибка сервера | Непредвиденная ошибка при обработке запроса |
 
@@ -47,6 +47,16 @@ dotnet test --verbosity normal
   "status": 404,
   "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
   "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+**404 - Бронь не найдена:**
+```json
+{
+  "title": "Resource not found",
+  "status": 404,
+  "detail": "Booking с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/bookings/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -184,11 +194,77 @@ curl -X 'PUT' \
 }'
 ```
 
-### 5. DELETE /events/{id}
+### 5. POST /events/{id}/book
+Создаёт бронь для указанного события. Если событие с таким ID не существует — возвращается `404 Resource not found`.
+
+```
+curl -X 'POST' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/book' \
+  -H 'accept: */*'
+```
+
+**Ответ:** `202 Accepted` с телом созданной брони:
+```json
+{
+  "id": "e8f9d70a-1b2c-4d3e-8f4a-5b6c7d8e9f01",
+  "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "status": "Pending",
+  "createdAt": "2026-08-26T07:48:22.985Z",
+  "processedAt": null
+}
+```
+
+### 6. DELETE /events/{id}
 ```
 curl -X 'DELETE' \
   'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
   -H 'accept: */*'
+```
+
+---
+
+## Бронирования (Bookings)
+
+Бронирования реализованы через [`IBookingService`](PracticumApi/Interfaces/IBookingService.cs) и [`BookingService`](PracticumApi/Services/BookingService.cs) (хранилище в памяти, аналогично событиям). Контроллер [`BookingController`](PracticumApi/Controllers/BookingController.cs) обслуживает маршрут `/bookings`.
+
+### Модель Booking
+
+Поля модели [`Booking`](PracticumApi/Models/Booking.cs):
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `id` | `Guid` | Уникальный идентификатор брони (назначается автоматически) |
+| `eventId` | `Guid` | Идентификатор события, на которое создана бронь |
+| `status` | `BookingStatus` | Статус брони (см. ниже) |
+| `createdAt` | `DateTime` | Время создания брони (UTC) |
+| `processedAt` | `DateTime?` | Время обработки брони (если применимо) |
+
+### Статусы брони (`BookingStatus`)
+
+| Значение | Описание |
+|----------|----------|
+| `Pending` | Ожидает обработки (статус по умолчанию при создании) |
+| `Confirmed` | Бронь подтверждена |
+| `Rejected` | Бронь отклонена |
+
+### GET /bookings/{id}
+Получить бронь по идентификатору. Если бронь не найдена — `404 Resource not found`.
+
+```
+curl -X 'GET' \
+  'https://localhost:7008/bookings/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
+  -H 'accept: text/plain'
+```
+
+**Ответ:**
+```json
+{
+  "id": "e8f9d70a-1b2c-4d3e-8f4a-5b6c7d8e9f01",
+  "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "status": "Pending",
+  "createdAt": "2026-08-26T07:48:22.985Z",
+  "processedAt": null
+}
 ```
 
 ---

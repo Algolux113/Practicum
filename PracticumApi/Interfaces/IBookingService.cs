@@ -13,6 +13,12 @@ public interface IBookingService
     /// </summary>
     public Booking Create(Booking booking);
 
+    /// <summary>
+    /// Создаёт бронь для указанного события.
+    /// Если событие не найдено — выбрасывает NotFoundException.
+    /// </summary>
+    public Task<Booking> CreateBookingAsync(Guid eventId);
+
     public void Update(Booking booking);
 
     public void Delete(Guid id);

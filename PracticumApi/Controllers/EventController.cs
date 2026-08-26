@@ -6,9 +6,12 @@ namespace PracticumApi.Controllers;
 
 [ApiController]
 [Route("events")]
-public class EventController(IEventService eventService) : ControllerBase
+public class EventController(
+    IEventService eventService,
+    IBookingService bookingService) : ControllerBase
 {
     private readonly IEventService _eventService = eventService;
+    private readonly IBookingService _bookingService = bookingService;
 
     [HttpGet]
     public ActionResult<PaginatedResult<Event>> GetAll(
@@ -54,6 +57,14 @@ public class EventController(IEventService eventService) : ControllerBase
         _eventService.Update(existingEvent);
 
         return NoContent();
+    }
+
+    [HttpPost("{id:guid}/book")]
+    public async Task<IActionResult> Book(Guid id)
+    {
+        var booking = await _bookingService.CreateBookingAsync(id);
+
+        return Accepted($"/bookings/{booking.Id}", booking);
     }
 
     [HttpDelete("{id:guid}")]

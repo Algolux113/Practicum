@@ -7,8 +7,9 @@ namespace PracticumApi.Services;
 /// <summary>
 /// Сервис бронирований с хранилищем в памяти (аналог хранилища событий).
 /// </summary>
-public class BookingService() : IBookingService
+public class BookingService(IEventService eventService) : IBookingService
 {
+    private readonly IEventService _eventService = eventService;
     private readonly List<Booking> _bookings = [];
 
     public List<Booking> GetAll() => _bookings;
@@ -31,6 +32,16 @@ public class BookingService() : IBookingService
         _bookings.Add(booking);
 
         return booking;
+    }
+
+    public Task<Booking> CreateBookingAsync(Guid eventId)
+    {
+        // Проверяем, что событие существует; если нет — будет выброшено NotFoundException (404).
+        _eventService.Get(eventId);
+
+        var booking = Create(new Booking { EventId = eventId });
+
+        return Task.FromResult(booking);
     }
 
     public void Update(Booking booking)
