@@ -6,9 +6,12 @@ namespace PracticumApi.Controllers;
 
 [ApiController]
 [Route("events")]
-public class EventController(IEventService eventService) : ControllerBase
+public class EventController(
+    IEventService eventService,
+    IBookingService bookingService) : ControllerBase
 {
     private readonly IEventService _eventService = eventService;
+    private readonly IBookingService _bookingService = bookingService;
 
     [HttpGet]
     public ActionResult<PaginatedResult<Event>> GetAll(
@@ -19,8 +22,8 @@ public class EventController(IEventService eventService) : ControllerBase
         [FromQuery] int pageSize = 10
     ) => _eventService.GetAll(title, from, to, page, pageSize);
 
-    [HttpGet("{id:int}")]
-    public ActionResult<Event> Get(int id)
+    [HttpGet("{id:guid}")]
+    public ActionResult<Event> Get(Guid id)
     {
         var eventItem = _eventService.Get(id);
         return eventItem;
@@ -41,8 +44,8 @@ public class EventController(IEventService eventService) : ControllerBase
         return CreatedAtAction(nameof(Get), new { id = eventItem.Id }, eventItem);
     }
 
-    [HttpPut("{id:int}")]
-    public IActionResult Update(int id, EventDTO eventDTO)
+    [HttpPut("{id:guid}")]
+    public IActionResult Update(Guid id, EventDTO eventDTO)
     {
         var existingEvent = _eventService.Get(id);
         
@@ -56,8 +59,16 @@ public class EventController(IEventService eventService) : ControllerBase
         return NoContent();
     }
 
-    [HttpDelete("{id:int}")]
-    public IActionResult Delete(int id)
+    [HttpPost("{id:guid}/book")]
+    public async Task<IActionResult> Book(Guid id)
+    {
+        var booking = await _bookingService.CreateBookingAsync(id);
+
+        return Accepted($"/bookings/{booking.Id}", booking);
+    }
+
+    [HttpDelete("{id:guid}")]
+    public IActionResult Delete(Guid id)
     {
         _eventService.Delete(id);
         return NoContent();

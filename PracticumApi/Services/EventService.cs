@@ -41,7 +41,7 @@ public class EventService() : IEventService
         return new PaginatedResult<Event>(items, query.Count(), page, pageSize);
     }
 
-    public Event Get(int id)
+    public Event Get(Guid id)
     {
         var eventItem = Events.FirstOrDefault(x => x.Id == id);
         if (eventItem is null)
@@ -52,7 +52,7 @@ public class EventService() : IEventService
 
     public void Add(Event eventItem)
     {
-        eventItem.Id = Events.Count != 0 ? Events.Max(x => x.Id) + 1 : 1;
+        eventItem.Id = Guid.NewGuid();
         Events.Add(eventItem);
     }
 
@@ -65,7 +65,7 @@ public class EventService() : IEventService
         Events[index] = eventItem;
     }
 
-    public void Delete(int id)
+    public void Delete(Guid id)
     {
         var eventItem = Events.FirstOrDefault(x => x.Id == id);
         if(eventItem is null)

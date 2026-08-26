@@ -16,6 +16,19 @@ dotnet test
 dotnet test --verbosity normal
 ```
 
+### Тестовый проект
+
+Интеграционные тесты находятся в проекте [`PracticumTests`](PracticumTests/PracticumTests.csproj) и используют реальные реализации сервисов (без моков). Состоит из двух классов:
+
+- [`EventServiceIntegrationTests`](PracticumTests/EventServiceIntegrationTests.cs) — покрывает операции `EventService`: создание, получение, обновление, удаление, фильтрацию по названию/датам, пагинацию, а также сценарии ошибок (`NotFoundException`, `ValidationException`).
+- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает операции `BookingService`: создание брони для существующего события, получение по ID, изменение статуса (Confirm/Reject), а также сценарии ошибок (`NotFoundException` при бронировании несуществующего или удалённого события).
+
+В обоих классах тесты разбиты на две группы через `#region`:
+- **Успешные сценарии**;
+- **Неуспешные сценарии**.
+
+Используемые пакеты: `xunit`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`, `Moq`, `coverlet.collector`.
+
 ## Формат ошибок API
 
 Все ошибки возвращаются в единообразном формате JSON (RFC 7807 - Problem Details):
@@ -25,8 +38,8 @@ dotnet test --verbosity normal
   "type": "https://tools.ietf.org/html/rfc7231#section-6.5.1",
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 999 не найден",
-  "instance": "/events/999"
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -34,7 +47,7 @@ dotnet test --verbosity normal
 
 | Статус | Название | Описание | Пример сценария |
 |--------|----------|---------|-----------------|
-| **404** | Resource not found | Ресурс не найден | `GET /events/999` - событие не существует |
+| **404** | Resource not found | Ресурс не найден | `GET /events/{id}`, `GET /bookings/{id}` или `POST /events/{id}/book` — объект с указанным GUID не существует |
 | **400** | Validation error | Ошибка валидации данных | `POST /events` с `endAt <= startAt`, `GET /events?page=0` |
 | **500** | Internal server error | Ошибка сервера | Непредвиденная ошибка при обработке запроса |
 
@@ -45,8 +58,18 @@ dotnet test --verbosity normal
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 999 не найден",
-  "instance": "/events/999"
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+**404 - Бронь не найдена:**
+```json
+{
+  "title": "Resource not found",
+  "status": 404,
+  "detail": "Booking с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/bookings/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -152,7 +175,7 @@ curl -X 'GET' \
 ### 2. GET /events/{id}
 ```
 curl -X 'GET' \
-  'https://localhost:7008/events/1' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
   -H 'accept: text/plain'
 ```
 
@@ -173,7 +196,7 @@ curl -X 'POST' \
 ### 4. PUT /events/{id}
 ```
 curl -X 'PUT' \
-  'https://localhost:7008/events/1' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
   -H 'accept: */*' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -184,12 +207,100 @@ curl -X 'PUT' \
 }'
 ```
 
-### 5. DELETE /events/{id}
+### 5. POST /events/{id}/book
+Создаёт бронь для указанного события. Если событие с таким ID не существует — возвращается `404 Resource not found`.
+
 ```
-curl -X 'DELETE' \
-  'https://localhost:7008/events/1' \
+curl -X 'POST' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/book' \
   -H 'accept: */*'
 ```
+
+**Ответ:** `202 Accepted` с телом созданной брони:
+```json
+{
+  "id": "e8f9d70a-1b2c-4d3e-8f4a-5b6c7d8e9f01",
+  "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "status": "Pending",
+  "createdAt": "2026-08-26T07:48:22.985Z",
+  "processedAt": null
+}
+```
+
+### 6. DELETE /events/{id}
+```
+curl -X 'DELETE' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
+  -H 'accept: */*'
+```
+
+---
+
+## Бронирования (Bookings)
+
+Бронирования реализованы через [`IBookingService`](PracticumApi/Interfaces/IBookingService.cs) и [`BookingService`](PracticumApi/Services/BookingService.cs) (хранилище в памяти, аналогично событиям). Контроллер [`BookingController`](PracticumApi/Controllers/BookingController.cs) обслуживает маршрут `/bookings`.
+
+Бронирования в статусе `Pending` автоматически обрабатываются фоновым сервисом [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs): он периодически опрашивает хранилище и переводит ожидающие брони в статус `Confirmed`, имитируя обработку внешней системой. Подробнее — в разделе [Автоматическая обработка бронирований](#автоматическая-обработка-бронирований).
+
+### Модель Booking
+
+Поля модели [`Booking`](PracticumApi/Models/Booking.cs):
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `id` | `Guid` | Уникальный идентификатор брони (назначается автоматически) |
+| `eventId` | `Guid` | Идентификатор события, на которое создана бронь |
+| `status` | `BookingStatus` | Статус брони (см. ниже) |
+| `createdAt` | `DateTime` | Время создания брони (UTC) |
+| `processedAt` | `DateTime?` | Время обработки брони (если применимо) |
+
+### Статусы брони (`BookingStatus`)
+
+| Значение | Описание |
+|----------|----------|
+| `Pending` | Ожидает обработки (статус по умолчанию при создании). Автоматически переводится в `Confirmed` фоновым сервисом |
+| `Confirmed` | Бронь подтверждена (перевод из `Pending` выполняет `BookingProcessingService`) |
+| `Rejected` | Бронь отклонена |
+
+### GET /bookings/{id}
+Получить бронь по идентификатору. Если бронь не найдена — `404 Resource not found`.
+
+```
+curl -X 'GET' \
+  'https://localhost:7008/bookings/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
+  -H 'accept: text/plain'
+```
+
+**Ответ:**
+```json
+{
+  "id": "e8f9d70a-1b2c-4d3e-8f4a-5b6c7d8e9f01",
+  "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "status": "Pending",
+  "createdAt": "2026-08-26T07:48:22.985Z",
+  "processedAt": null
+}
+```
+
+### Автоматическая обработка бронирований
+
+Фоновый сервис [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs) наследует `BackgroundService` и регистрируется в DI через `AddHostedService<BookingProcessingService>()` (см. [`Program.cs`](PracticumApi/Program.cs:12)).
+
+**Принцип работы:**
+
+1. Сервис запускается вместе с приложением и каждые **5 секунд** опрашивает хранилище.
+2. Выбираются все брони в статусе `Pending`.
+3. Для каждой брони выполняется искусственная задержка **2 секунды**, имитирующая обращение к внешней системе.
+4. Бронь переводится в статус `Confirmed`, устанавливается `ProcessedAt = DateTime.UtcNow`, и изменения сохраняются через `IBookingService.Update`.
+5. При остановке приложения (`CancellationToken`) сервис корректно завершает работу.
+
+**Особенности реализации:**
+
+- Сервис создаёт собственную DI-область (`IServiceScopeFactory.CreateScope`) и получает `IBookingService` через `GetRequiredService`, поэтому он не зависит напрямую от времени жизни сервиса бронирований.
+- Ошибки при обработке не останавливают фоновый сервис — они логируются, после чего цикл продолжается.
+- `OperationCanceledException` и `TaskCanceledException` при остановке приложения обрабатываются как штатное завершение.
+
+Это означает, что бронь, созданная через `POST /events/{id}/book` в статусе `Pending`, вскоре будет автоматически подтверждена (статус `Confirmed`).
 
 ---
 
@@ -200,12 +311,16 @@ curl -X 'DELETE' \
 ### Собственные исключения (`PracticumApi.Exceptions`)
 
 1. **`NotFoundException`** - выбрасывается, когда запрошенный ресурс не существует
-   - Пример: `GET /events/999` когда события с ID 999 нет
+   - Пример: `GET /events/{id}` когда события с указанным GUID нет
    - HTTP статус: 404
 
 2. **`ValidationException`** - выбрасывается при ошибках валидации данных
    - Пример: попытка создать событие с `EndAt < StartAt`
    - HTTP статус: 400
+
+Обе ошибки также переиспользуются в сервисе бронирований [`BookingService`](PracticumApi/Services/BookingService.cs):
+- методы `Get`, `Update` и `Delete` выбрасывают `NotFoundException("Booking", id)` при обращении к несуществующему бронированию;
+- сервис регистрируется в DI через интерфейс [`IBookingService`](PracticumApi/Interfaces/IBookingService.cs).
 
 ### Обработка исключений
 

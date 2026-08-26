@@ -12,9 +12,12 @@ PracticumApi/
 │   ├── NotFoundException.cs          # Ресурс не найден
 │   └── ValidationException.cs        # Ошибка валидации
 ├── Services/
-│   └── EventService.cs               # Сервис выбрасывает исключения
+│   ├── EventService.cs               # Сервис событий выбрасывает исключения
+│   ├── BookingService.cs             # Сервис бронирований также выбрасывает исключения
+│   └── BookingProcessingService.cs   # Фоновый сервис (BackgroundService) подтверждает Pending-брони
 ├── Controllers/
-│   └── EventController.cs            # Контроллер полагается на middleware
+│   ├── EventController.cs            # Контроллер событий полагается на middleware
+│   └── BookingController.cs          # Контроллер бронирований полагается на middleware
 └── Middlewares/
     └── GlobalExceptionHandlingMiddleware.cs  # Обработка всех исключений
 ```
@@ -23,35 +26,71 @@ PracticumApi/
 
 ### NotFoundException
 
-Выбрасывается когда запрошенный ресурс не существует.
+Выбрасывается когда запрошенный ресурс не существует. Идентификатор ресурса имеет тип `Guid`.
 
 ```csharp
 public class NotFoundException : Exception
 {
     public NotFoundException(string message) : base(message) { }
-    public NotFoundException(string resourceName, int id) 
+    public NotFoundException(string resourceName, Guid id)
         : base($"{resourceName} с ID {id} не найден") { }
 }
 ```
 
 **Примеры использования в EventService:**
 ```csharp
-public Event Get(int id)
+public Event Get(Guid id)
 {
     var eventItem = Events.FirstOrDefault(x => x.Id == id);
     if (eventItem is null)
         throw new NotFoundException("Event", id);
-    
+
     return eventItem;
 }
 
-public void Delete(int id)
+public void Delete(Guid id)
 {
     var eventItem = Events.FirstOrDefault(x => x.Id == id);
-    if(eventItem is null)
+    if (eventItem is null)
         throw new NotFoundException("Event", id);
-    
+
     Events.Remove(eventItem);
+}
+```
+
+**Примеры использования в BookingService** (методы `Get`, `Update` и `Delete`):
+```csharp
+public Booking Get(Guid id)
+{
+    var booking = _bookings.FirstOrDefault(x => x.Id == id);
+    if (booking is null)
+        throw new NotFoundException("Booking", id);
+
+    return booking;
+}
+```
+
+**Бронирование несуществующего события** (`CreateBookingAsync`):
+```csharp
+public Task<Booking> CreateBookingAsync(Guid eventId)
+{
+    // Если событие не найдено — EventService.Get выбрасывает NotFoundException
+    _eventService.Get(eventId);
+
+    var booking = Create(new Booking { EventId = eventId });
+
+    return Task.FromResult(booking);
+}
+```
+При вызове `POST /events/{id}/book` с несуществующим `id` middleware вернёт:
+```
+HTTP/1.1 404 Not Found
+
+{
+  "title": "Resource not found",
+  "status": 404,
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/book"
 }
 ```
 
@@ -63,8 +102,8 @@ Content-Type: application/json
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 999 не найден",
-  "instance": "/events/999"
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -76,7 +115,7 @@ Content-Type: application/json
 public class ValidationException : Exception
 {
     public ValidationException(string message) : base(message) { }
-    public ValidationException(string fieldName, string message) 
+    public ValidationException(string fieldName, string message)
         : base($"Ошибка валидации поля '{fieldName}': {message}") { }
 }
 ```
@@ -86,7 +125,7 @@ public class ValidationException : Exception
 1. **Валидация в сервисе (логика бизнеса):**
 ```csharp
 if (eventItem.EndAt <= eventItem.StartAt)
-    throw new ValidationException("EndAt", 
+    throw new ValidationException("EndAt",
         "Дата окончания должна быть больше даты начала.");
 ```
 
@@ -94,15 +133,15 @@ if (eventItem.EndAt <= eventItem.StartAt)
 ```csharp
 // В EventService.GetAll()
 if (page < 1)
-    throw new ValidationException(nameof(page), 
+    throw new ValidationException(nameof(page),
         "Номер страницы должен быть больше или равен 1");
 
 if (pageSize < 1)
-    throw new ValidationException(nameof(pageSize), 
+    throw new ValidationException(nameof(pageSize),
         "Размер страницы должен быть больше или равен 1");
 
 if (pageSize > 100)
-    throw new ValidationException(nameof(pageSize), 
+    throw new ValidationException(nameof(pageSize),
         "Размер страницы не может превышать 100");
 ```
 
@@ -140,7 +179,9 @@ Content-Type: application/json
 **GlobalExceptionHandlingMiddleware** перехватывает все необработанные исключения:
 
 ```csharp
-public class GlobalExceptionHandlingMiddleware
+public class GlobalExceptionHandlingMiddleware(
+    RequestDelegate next,
+    ILogger<GlobalExceptionHandlingMiddleware> logger)
 {
     public async Task InvokeAsync(HttpContext httpContext)
     {
@@ -156,10 +197,23 @@ public class GlobalExceptionHandlingMiddleware
 
     private async Task HandleException(HttpContext httpContext, Exception ex)
     {
-        _logger.LogError(ex, "Unhandled exception at {Path}", httpContext.Request.Path);
-        
+        _logger.LogError(ex,
+            "Unhandled exception. Method={Method}, Path={Path}, RequestId={RequestId}",
+            httpContext.Request.Method,
+            httpContext.Request.Path,
+            httpContext.Request.Headers["x-request-id"]);
+
+        // Если ответ уже начат, повторная запись невозможна
+        if (httpContext.Response.HasStarted)
+        {
+            return;
+        }
+
         var (statusCode, title) = MapStatusCode(ex);
-        
+
+        httpContext.Response.StatusCode = statusCode;
+        httpContext.Response.ContentType = "application/json";
+
         var error = new ProblemDetails
         {
             Status = statusCode,
@@ -194,31 +248,31 @@ public class GlobalExceptionHandlingMiddleware
    ↓
 5. GlobalExceptionHandlingMiddleware перехватывает исключение
    ↓
-6. Middleware логирует ошибку
+6. Middleware логирует ошибку (метод, путь, RequestId)
    ↓
-7. Middleware маппит исключение на HTTP статус-код и titre
+7. Middleware маппит исключение на HTTP статус-код и заголовок (title)
    ↓
-8. Middleware отправляет JSON ответ клиенту
+8. Middleware отправляет JSON ответ клиенту (RFC 7807)
 ```
 
 ## Пример: Получение несуществующего события
 
 **Запрос:**
 ```bash
-curl -X GET "https://localhost:7008/events/999"
+curl -X GET "https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 ```
 
-**処理:**
-1. `EventController.Get(999)` вызывает `_eventService.Get(999)`
-2. `EventService.Get(999)` не находит событие и выбрасывает:
+**Обработка:**
+1. `EventController.Get(id)` вызывает `_eventService.Get(id)`
+2. `EventService.Get(id)` не находит событие и выбрасывает:
    ```csharp
-   throw new NotFoundException("Event", 999);
+   throw new NotFoundException("Event", id); // id типа Guid
    ```
 3. Исключение поднимается в контроллер и выше
 4. `GlobalExceptionHandlingMiddleware` перехватывает его
 5. Middleware определяет:
    - Тип: `NotFoundException` → статус 404
-   - Сообщение: "Event с ID 999 не найден"
+   - Сообщение: "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден"
 
 **Ответ:**
 ```json
@@ -228,8 +282,8 @@ Content-Type: application/json
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 999 не найден",
-  "instance": "/events/999"
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -246,7 +300,7 @@ curl -X GET "https://localhost:7008/events?page=0"
 2. `EventService.GetAll()` проверяет параметры в начале метода:
    ```csharp
    if (page < 1)
-       throw new ValidationException(nameof(page), 
+       throw new ValidationException(nameof(page),
            "Номер страницы должен быть больше или равен 1");
    ```
 3. Выбрасывается исключение `ValidationException`
@@ -275,31 +329,64 @@ Content-Type: application/json
 
 ## Тестирование
 
-Тесты проверяют, что исключения выбрасываются в правильных сценариях:
+Интеграционные тесты проверяют, что исключения выбрасываются в правильных сценариях:
+
+- [`EventServiceIntegrationTests`](PracticumTests/EventServiceIntegrationTests.cs) — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации).
+- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает `NotFoundException` при создании брони для несуществующего или удалённого события, а также при получении брони по несуществующему ID.
+
+**Примеры из `EventServiceIntegrationTests`:**
 
 ```csharp
 [Fact]
 public void Get_WithInvalidId_ShouldThrowNotFoundException()
 {
     // Arrange
-    var eventService = new EventService();
-    eventService.Add(new Event { Title = "Event", ... });
+    var eventService = CreateEventService();
+    eventService.Add(new Event { Title = "Event", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
     // Act & Assert
-    Assert.Throws<NotFoundException>(() => eventService.Get(999));
+    Assert.Throws<NotFoundException>(() => eventService.Get(Guid.NewGuid()));
 }
 
 [Fact]
 public void GetAll_WithPageZero_ShouldThrowValidationException()
 {
     // Arrange
-    var eventService = new EventService();
+    var eventService = CreateEventService();
 
     // Act & Assert
     var ex = Assert.Throws<ValidationException>(() => eventService.GetAll(page: 0));
     Assert.Contains("Номер страницы должен быть больше или равен 1", ex.Message);
 }
 ```
+
+**Примеры из `BookingServiceIntegrationTests`:**
+
+> Примечание: `BookingService` принимает `IEventService` в конструкторе, поэтому тесты создают оба сервиса совместно.
+
+```csharp
+[Fact]
+public async Task CreateBookingAsync_ForNonExistentEvent_ShouldThrowNotFoundException()
+{
+    // Arrange
+    var (bookingService, _) = CreateServices();
+
+    // Act & Assert
+    await Assert.ThrowsAsync<NotFoundException>(() =>
+        bookingService.CreateBookingAsync(Guid.NewGuid()));
+}
+
+[Fact]
+public async Task Get_WithInvalidId_ShouldThrowNotFoundException()
+{
+    // Arrange
+    var (bookingService, eventService) = CreateServices();
+    var eventId = CreateEvent(eventService);
+    await bookingService.CreateBookingAsync(eventId);
+
+    // Act & Assert
+    Assert.Throws<NotFoundException>(() => bookingService.Get(Guid.NewGuid()));
+}
 ```
 
 ## Расширение системы
@@ -335,7 +422,8 @@ public void GetAll_WithPageZero_ShouldThrowValidationException()
 
 ✅ **Единообразный формат** - все ошибки возвращаются в одном формате (RFC 7807)  
 ✅ **Централизованная обработка** - вся логика обработки в одном месте  
-✅ **Легкое логирование** - все ошибки логируются в одном месте  
+✅ **Легкое логирование** - все ошибки логируются в одном месте (метод, путь, RequestId)  
 ✅ **Чистая архитектура** - контроллеры не содержат логику обработки ошибок  
 ✅ **Расширяемость** - просто добавьте новое исключение и его обработку  
-✅ **Тестируемость** - легко тестировать выброс исключений  
+✅ **Переиспользование** - одни и те же исключения используются как в `EventService`, так и в `BookingService`  
+✅ **Тестируемость** - легко тестировать выброс исключений
