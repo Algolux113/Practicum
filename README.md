@@ -227,6 +227,8 @@ curl -X 'DELETE' \
 
 Бронирования реализованы через [`IBookingService`](PracticumApi/Interfaces/IBookingService.cs) и [`BookingService`](PracticumApi/Services/BookingService.cs) (хранилище в памяти, аналогично событиям). Контроллер [`BookingController`](PracticumApi/Controllers/BookingController.cs) обслуживает маршрут `/bookings`.
 
+Бронирования в статусе `Pending` автоматически обрабатываются фоновым сервисом [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs): он периодически опрашивает хранилище и переводит ожидающие брони в статус `Confirmed`, имитируя обработку внешней системой. Подробнее — в разделе [Автоматическая обработка бронирований](#автоматическая-обработка-бронирований).
+
 ### Модель Booking
 
 Поля модели [`Booking`](PracticumApi/Models/Booking.cs):
@@ -243,8 +245,8 @@ curl -X 'DELETE' \
 
 | Значение | Описание |
 |----------|----------|
-| `Pending` | Ожидает обработки (статус по умолчанию при создании) |
-| `Confirmed` | Бронь подтверждена |
+| `Pending` | Ожидает обработки (статус по умолчанию при создании). Автоматически переводится в `Confirmed` фоновым сервисом |
+| `Confirmed` | Бронь подтверждена (перевод из `Pending` выполняет `BookingProcessingService`) |
 | `Rejected` | Бронь отклонена |
 
 ### GET /bookings/{id}
@@ -266,6 +268,26 @@ curl -X 'GET' \
   "processedAt": null
 }
 ```
+
+### Автоматическая обработка бронирований
+
+Фоновый сервис [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs) наследует `BackgroundService` и регистрируется в DI через `AddHostedService<BookingProcessingService>()` (см. [`Program.cs`](PracticumApi/Program.cs:12)).
+
+**Принцип работы:**
+
+1. Сервис запускается вместе с приложением и каждые **5 секунд** опрашивает хранилище.
+2. Выбираются все брони в статусе `Pending`.
+3. Для каждой брони выполняется искусственная задержка **2 секунды**, имитирующая обращение к внешней системе.
+4. Бронь переводится в статус `Confirmed`, устанавливается `ProcessedAt = DateTime.UtcNow`, и изменения сохраняются через `IBookingService.Update`.
+5. При остановке приложения (`CancellationToken`) сервис корректно завершает работу.
+
+**Особенности реализации:**
+
+- Сервис создаёт собственную DI-область (`IServiceScopeFactory.CreateScope`) и получает `IBookingService` через `GetRequiredService`, поэтому он не зависит напрямую от времени жизни сервиса бронирований.
+- Ошибки при обработке не останавливают фоновый сервис — они логируются, после чего цикл продолжается.
+- `OperationCanceledException` и `TaskCanceledException` при остановке приложения обрабатываются как штатное завершение.
+
+Это означает, что бронь, созданная через `POST /events/{id}/book` в статусе `Pending`, вскоре будет автоматически подтверждена (статус `Confirmed`).
 
 ---
 

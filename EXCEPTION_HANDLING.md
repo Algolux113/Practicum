@@ -13,7 +13,8 @@ PracticumApi/
 │   └── ValidationException.cs        # Ошибка валидации
 ├── Services/
 │   ├── EventService.cs               # Сервис событий выбрасывает исключения
-│   └── BookingService.cs             # Сервис бронирований также выбрасывает исключения
+│   ├── BookingService.cs             # Сервис бронирований также выбрасывает исключения
+│   └── BookingProcessingService.cs   # Фоновый сервис (BackgroundService) подтверждает Pending-брони
 ├── Controllers/
 │   ├── EventController.cs            # Контроллер событий полагается на middleware
 │   └── BookingController.cs          # Контроллер бронирований полагается на middleware
