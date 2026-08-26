@@ -19,8 +19,8 @@ public class EventController(IEventService eventService) : ControllerBase
         [FromQuery] int pageSize = 10
     ) => _eventService.GetAll(title, from, to, page, pageSize);
 
-    [HttpGet("{id:int}")]
-    public ActionResult<Event> Get(int id)
+    [HttpGet("{id:guid}")]
+    public ActionResult<Event> Get(Guid id)
     {
         var eventItem = _eventService.Get(id);
         return eventItem;
@@ -41,8 +41,8 @@ public class EventController(IEventService eventService) : ControllerBase
         return CreatedAtAction(nameof(Get), new { id = eventItem.Id }, eventItem);
     }
 
-    [HttpPut("{id:int}")]
-    public IActionResult Update(int id, EventDTO eventDTO)
+    [HttpPut("{id:guid}")]
+    public IActionResult Update(Guid id, EventDTO eventDTO)
     {
         var existingEvent = _eventService.Get(id);
         
@@ -56,8 +56,8 @@ public class EventController(IEventService eventService) : ControllerBase
         return NoContent();
     }
 
-    [HttpDelete("{id:int}")]
-    public IActionResult Delete(int id)
+    [HttpDelete("{id:guid}")]
+    public IActionResult Delete(Guid id)
     {
         _eventService.Delete(id);
         return NoContent();

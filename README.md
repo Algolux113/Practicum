@@ -25,8 +25,8 @@ dotnet test --verbosity normal
   "type": "https://tools.ietf.org/html/rfc7231#section-6.5.1",
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 999 не найден",
-  "instance": "/events/999"
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -34,7 +34,7 @@ dotnet test --verbosity normal
 
 | Статус | Название | Описание | Пример сценария |
 |--------|----------|---------|-----------------|
-| **404** | Resource not found | Ресурс не найден | `GET /events/999` - событие не существует |
+| **404** | Resource not found | Ресурс не найден | `GET /events/{id}` - событие с указанным GUID не существует |
 | **400** | Validation error | Ошибка валидации данных | `POST /events` с `endAt <= startAt`, `GET /events?page=0` |
 | **500** | Internal server error | Ошибка сервера | Непредвиденная ошибка при обработке запроса |
 
@@ -45,8 +45,8 @@ dotnet test --verbosity normal
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 999 не найден",
-  "instance": "/events/999"
+  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -152,7 +152,7 @@ curl -X 'GET' \
 ### 2. GET /events/{id}
 ```
 curl -X 'GET' \
-  'https://localhost:7008/events/1' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
   -H 'accept: text/plain'
 ```
 
@@ -173,7 +173,7 @@ curl -X 'POST' \
 ### 4. PUT /events/{id}
 ```
 curl -X 'PUT' \
-  'https://localhost:7008/events/1' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
   -H 'accept: */*' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -187,7 +187,7 @@ curl -X 'PUT' \
 ### 5. DELETE /events/{id}
 ```
 curl -X 'DELETE' \
-  'https://localhost:7008/events/1' \
+  'https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6' \
   -H 'accept: */*'
 ```
 
@@ -200,12 +200,16 @@ curl -X 'DELETE' \
 ### Собственные исключения (`PracticumApi.Exceptions`)
 
 1. **`NotFoundException`** - выбрасывается, когда запрошенный ресурс не существует
-   - Пример: `GET /events/999` когда события с ID 999 нет
+   - Пример: `GET /events/{id}` когда события с указанным GUID нет
    - HTTP статус: 404
 
 2. **`ValidationException`** - выбрасывается при ошибках валидации данных
    - Пример: попытка создать событие с `EndAt < StartAt`
    - HTTP статус: 400
+
+Обе ошибки также переиспользуются в сервисе бронирований [`BookingService`](PracticumApi/Services/BookingService.cs):
+- методы `Get`, `Update` и `Delete` выбрасывают `NotFoundException("Booking", id)` при обращении к несуществующему бронированию;
+- сервис регистрируется в DI через интерфейс [`IBookingService`](PracticumApi/Interfaces/IBookingService.cs).
 
 ### Обработка исключений
 

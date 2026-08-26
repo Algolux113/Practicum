@@ -32,11 +32,11 @@ public class EventServiceIntegrationTests
 
         // Act
         eventService.Add(newEvent);
-        var result = eventService.Get(1);
+        var result = eventService.Get(newEvent.Id);
 
         // Assert
         Assert.NotNull(result);
-        Assert.Equal(1, result.Id);
+        Assert.NotEqual(Guid.Empty, result.Id);
         Assert.Equal("Conference 2024", result.Title);
         Assert.Equal("Annual tech conference", result.Description);
     }
@@ -80,11 +80,11 @@ public class EventServiceIntegrationTests
         eventService.Add(newEvent);
 
         // Act
-        var result = eventService.Get(1);
+        var result = eventService.Get(newEvent.Id);
 
         // Assert
         Assert.NotNull(result);
-        Assert.Equal(1, result.Id);
+        Assert.Equal(newEvent.Id, result.Id);
         Assert.Equal("Meeting", result.Title);
     }
 
@@ -106,7 +106,7 @@ public class EventServiceIntegrationTests
 
         var updatedEvent = new Event
         {
-            Id = 1,
+            Id = originalEvent.Id,
             Title = "Updated Event",
             Description = "Updated description",
             StartAt = new DateTime(2024, 5, 21, 14, 00, 00),
@@ -115,7 +115,7 @@ public class EventServiceIntegrationTests
 
         // Act
         eventService.Update(updatedEvent);
-        var result = eventService.Get(1);
+        var result = eventService.Get(originalEvent.Id);
 
         // Assert
         Assert.NotNull(result);
@@ -139,13 +139,13 @@ public class EventServiceIntegrationTests
             EndAt = new DateTime(2024, 5, 20, 11, 00, 00)
         };
         eventService.Add(newEvent);
-        Assert.NotNull(eventService.Get(1));
+        Assert.NotNull(eventService.Get(newEvent.Id));
 
         // Act
-        eventService.Delete(1);
+        eventService.Delete(newEvent.Id);
 
         // Assert - попытка получить удалённое событие должна выбросить исключение
-        Assert.Throws<NotFoundException>(() => eventService.Get(1));
+        Assert.Throws<NotFoundException>(() => eventService.Get(newEvent.Id));
     }
 
     /// <summary>
@@ -313,7 +313,7 @@ public class EventServiceIntegrationTests
         eventService.Add(new Event { Title = "Event", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
         // Act & Assert
-        Assert.Throws<NotFoundException>(() => eventService.Get(999));
+        Assert.Throws<NotFoundException>(() => eventService.Get(Guid.NewGuid()));
     }
 
     /// <summary>
@@ -326,7 +326,7 @@ public class EventServiceIntegrationTests
         var eventService = CreateEventService();
         
         // Act & Assert
-        Assert.Throws<NotFoundException>(() => eventService.Get(1));
+        Assert.Throws<NotFoundException>(() => eventService.Get(Guid.NewGuid()));
     }
 
     /// <summary>
@@ -342,7 +342,7 @@ public class EventServiceIntegrationTests
 
         var nonExistentEvent = new Event
         {
-            Id = 999,
+            Id = Guid.NewGuid(),
             Title = "Non-existent Event",
             StartAt = DateTime.Now.AddDays(1),
             EndAt = DateTime.Now.AddDays(1).AddHours(1)
@@ -363,7 +363,7 @@ public class EventServiceIntegrationTests
         eventService.Add(new Event { Title = "Event 1", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
         // Act & Assert
-        Assert.Throws<NotFoundException>(() => eventService.Delete(999));
+        Assert.Throws<NotFoundException>(() => eventService.Delete(Guid.NewGuid()));
     }
 
     /// <summary>
@@ -383,7 +383,7 @@ public class EventServiceIntegrationTests
 
         // Act
         eventService.Add(invalidEvent);
-        var result = eventService.Get(1);
+        var result = eventService.Get(invalidEvent.Id);
 
         // Assert
         Assert.NotNull(result);
@@ -469,7 +469,7 @@ public class EventServiceIntegrationTests
 
         var invalidUpdatedEvent = new Event
         {
-            Id = 1,
+            Id = originalEvent.Id,
             Title = "Updated Event",
             StartAt = new DateTime(2024, 5, 21, 15, 00, 00),
             EndAt = new DateTime(2024, 5, 21, 09, 00, 00) // EndAt раньше StartAt
@@ -477,7 +477,7 @@ public class EventServiceIntegrationTests
 
         // Act
         eventService.Update(invalidUpdatedEvent);
-        var result = eventService.Get(1);
+        var result = eventService.Get(originalEvent.Id);
 
         // Assert
         Assert.NotNull(result);
