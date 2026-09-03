@@ -159,7 +159,7 @@ curl -X 'GET' \
 {
   "items": [
     {
-      "id": 1,
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "title": "Conference 2024",
       "description": "Annual tech conference",
       "startAt": "2024-06-15T09:00:00",
