@@ -18,12 +18,17 @@ dotnet test --verbosity normal
 
 ### Тестовый проект
 
-Интеграционные тесты находятся в проекте [`PracticumTests`](PracticumTests/PracticumTests.csproj) и используют реальные реализации сервисов (без моков). Состоит из двух классов:
+Интеграционные тесты находятся в проекте [`PracticumTests`](PracticumTests/PracticumTests.csproj) и используют реальные реализации сервисов (без моков). Состоит из двух наборов:
 
-- [`EventServiceIntegrationTests`](PracticumTests/EventServiceIntegrationTests.cs) — покрывает операции `EventService`: создание, получение, обновление, удаление, фильтрацию по названию/датам, пагинацию, а также сценарии ошибок (`NotFoundException`, `ValidationException`).
-- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает операции `BookingService`: создание брони для существующего события, получение по ID, изменение статуса (Confirm/Reject), а также сценарии ошибок (`NotFoundException` при бронировании несуществующего или удалённого события).
+- `EventServiceIntegrationTests` — покрывает операции `EventService`: создание, получение, обновление, удаление, фильтрацию по названию/датам, пагинацию, а также сценарии ошибок (`NotFoundException`, `ValidationException`). Это один `partial`-класс, разбитый по файлам по проверяемому поведению:
+  - [`EventServiceIntegrationTests.cs`](PracticumTests/EventServiceIntegrationTests.cs) — только общий helper `CreateEventService()`;
+  - [`EventServiceCrudTests.cs`](PracticumTests/EventServiceCrudTests.cs) — `Add` / `Get` / `Update` / `Delete` и их сценарии `NotFoundException`;
+  - [`EventServiceFilteringTests.cs`](PracticumTests/EventServiceFilteringTests.cs) — фильтрация `GetAll` по названию и диапазону дат;
+  - [`EventServicePaginationTests.cs`](PracticumTests/EventServicePaginationTests.cs) — пагинация `GetAll` и валидация `page` / `pageSize`;
+  - [`EventServiceDateHandlingTests.cs`](PracticumTests/EventServiceDateHandlingTests.cs) — события с `EndAt < StartAt` всё равно сохраняются (на уровне сервиса дат не валидируются).
+- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает операции `BookingService`: создание брони для существующего события, получение по ID, изменение статуса (Confirm/Reject), а также сценарии ошибок (`NotFoundException` при бронировании несуществующего или удалённого события). Один файл.
 
-В обоих классах тесты разбиты на две группы через `#region`:
+В каждом файле тесты разбиты на две группы через `#region`:
 - **Успешные сценарии**;
 - **Неуспешные сценарии**.
 

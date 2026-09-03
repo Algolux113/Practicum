@@ -331,10 +331,10 @@ Content-Type: application/json
 
 Интеграционные тесты проверяют, что исключения выбрасываются в правильных сценариях:
 
-- [`EventServiceIntegrationTests`](PracticumTests/EventServiceIntegrationTests.cs) — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации).
+- `EventServiceIntegrationTests` — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации). Это один `partial`-класс, разбитый по файлам: сценарии `NotFoundException` — в [`EventServiceCrudTests.cs`](PracticumTests/EventServiceCrudTests.cs), сценарии `ValidationException` по пагинации — в [`EventServicePaginationTests.cs`](PracticumTests/EventServicePaginationTests.cs).
 - [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает `NotFoundException` при создании брони для несуществующего или удалённого события, а также при получении брони по несуществующему ID.
 
-**Примеры из `EventServiceIntegrationTests`:**
+**Примеры из `EventServiceIntegrationTests`** (`Get_WithInvalidId_...` — в `EventServiceCrudTests.cs`, `GetAll_WithPageZero_...` — в `EventServicePaginationTests.cs`):
 
 ```csharp
 [Fact]
