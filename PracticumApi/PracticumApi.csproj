@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <!-- Явно поднимаем транзитивную зависимость: в Microsoft.OpenApi 2.0.0 есть уязвимость GHSA-v5pm-xwqc-g5wc (исправлена в 2.7.5) -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.12.2" />
     <PackageReference Include="NSwag.AspNetCore" Version="14.7.1" />
   </ItemGroup>
 
