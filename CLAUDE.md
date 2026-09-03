@@ -41,6 +41,16 @@ Controllers are thin and contain no error handling. Business rules live in the s
 
 Integration tests in `PracticumTests` use **real service instances, no mocks** (despite `Moq` being referenced). `BookingService` takes `IEventService` in its constructor, so booking tests construct both services together. Tests follow Arrange/Act/Assert and are split with `#region Успешные сценарии` / `#region Неуспешные сценарии`.
 
+`EventServiceIntegrationTests` is one `partial class` spread across several files, grouped by behavior under test — add a new `EventService` test to the file that matches its concern:
+
+- [EventServiceIntegrationTests.cs](PracticumTests/EventServiceIntegrationTests.cs) — the shared `CreateEventService()` helper only
+- [EventServiceCrudTests.cs](PracticumTests/EventServiceCrudTests.cs) — `Add` / `Get` / `Update` / `Delete` and their `NotFoundException` cases
+- [EventServiceFilteringTests.cs](PracticumTests/EventServiceFilteringTests.cs) — `GetAll` filtering by title and date range
+- [EventServicePaginationTests.cs](PracticumTests/EventServicePaginationTests.cs) — `GetAll` paging and `page` / `pageSize` validation
+- [EventServiceDateHandlingTests.cs](PracticumTests/EventServiceDateHandlingTests.cs) — events with `EndAt < StartAt` still persist (no service-level date validation)
+
+`BookingServiceIntegrationTests` remains a single file.
+
 ## Conventions
 
 - **Russian** is used for commit messages, code comments, XML doc summaries, and exception messages (which become the `detail` field of API error responses). Match this when editing existing code.
