@@ -4,18 +4,16 @@ namespace PracticumApi.Interfaces;
 
 public interface IBookingService
 {
+    /// <summary>
+    /// Возвращает снимок всех бронирований (копию, безопасную для перечисления).
+    /// </summary>
     public List<Booking> GetAll();
 
     public Booking Get(Guid id);
 
     /// <summary>
-    /// Создаёт бронь, назначая ей уникальный Id, статус Pending и текущую дату в CreatedAt.
-    /// </summary>
-    public Booking Create(Booking booking);
-
-    /// <summary>
-    /// Создаёт бронь для указанного события.
-    /// Если событие не найдено — выбрасывает NotFoundException.
+    /// Создаёт бронь для указанного события: назначает уникальный Id, статус Pending
+    /// и текущее время в CreatedAt. Если событие не найдено — выбрасывает NotFoundException.
     /// </summary>
     public Task<Booking> CreateBookingAsync(Guid eventId);
 

@@ -40,10 +40,10 @@ dotnet test --verbosity normal
 
 ```json
 {
-  "type": "https://tools.ietf.org/html/rfc7231#section-6.5.1",
+  "type": "https://tools.ietf.org/html/rfc7231#section-6.5.4",
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "detail": "Ресурс \"Event\" с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
   "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
@@ -63,7 +63,7 @@ dotnet test --verbosity normal
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "detail": "Ресурс \"Event\" с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
   "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
@@ -73,7 +73,7 @@ dotnet test --verbosity normal
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Booking с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "detail": "Ресурс \"Booking\" с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
   "instance": "/bookings/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
@@ -173,7 +173,8 @@ curl -X 'GET' \
   ],
   "totalCount": 1,
   "page": 1,
-  "pageSize": 10
+  "pageSize": 10,
+  "totalPages": 1
 }
 ```
 

@@ -36,8 +36,9 @@ public class EventController(
         {
             Title = eventDTO.Title,
             Description = eventDTO.Description,
-            StartAt = eventDTO.StartAt,
-            EndAt = eventDTO.EndAt,
+            // StartAt/EndAt гарантированно заданы: [Required] + IValidatableObject уже отработали.
+            StartAt = eventDTO.StartAt!.Value,
+            EndAt = eventDTO.EndAt!.Value,
         };
 
         _eventService.Add(eventItem);
@@ -47,14 +48,21 @@ public class EventController(
     [HttpPut("{id:guid}")]
     public IActionResult Update(Guid id, EventDTO eventDTO)
     {
-        var existingEvent = _eventService.Get(id);
-        
-        existingEvent.Title = eventDTO.Title;
-        existingEvent.Description = eventDTO.Description;
-        existingEvent.StartAt = eventDTO.StartAt;
-        existingEvent.EndAt = eventDTO.EndAt;
+        // Проверяем существование события; отсутствие — это 404.
+        _eventService.Get(id);
 
-        _eventService.Update(existingEvent);
+        // Собираем новый объект и отдаём его сервису целиком, не мутируя хранимую сущность
+        // напрямую: так контракт Update (найти и заменить) остаётся честным.
+        var updatedEvent = new Event
+        {
+            Id = id,
+            Title = eventDTO.Title,
+            Description = eventDTO.Description,
+            StartAt = eventDTO.StartAt!.Value,
+            EndAt = eventDTO.EndAt!.Value,
+        };
+
+        _eventService.Update(updatedEvent);
 
         return NoContent();
     }

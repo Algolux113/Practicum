@@ -10,7 +10,7 @@ public class NotFoundException : Exception
     }
 
     public NotFoundException(string resourceName, Guid id)
-        : base($"{resourceName} с ID {id} не найден")
+        : base($"Ресурс \"{resourceName}\" с ID {id} не найден")
     {
     }
 }

@@ -1,3 +1,4 @@
+using PracticumApi.Exceptions;
 using PracticumApi.Interfaces;
 using PracticumApi.Models;
 
@@ -80,12 +81,21 @@ public class BookingProcessingService(
             // Имитация обращения к внешней системе.
             await Task.Delay(ExternalSystemDelay, cancellationToken);
 
-            booking.Status = BookingStatus.Confirmed;
-            booking.ProcessedAt = DateTime.UtcNow;
+            try
+            {
+                booking.Status = BookingStatus.Confirmed;
+                booking.ProcessedAt = DateTime.UtcNow;
 
-            bookingService.Update(booking);
+                bookingService.Update(booking);
 
-            _logger.LogInformation("Бронь {BookingId} переведена в статус Confirmed.", booking.Id);
+                _logger.LogInformation("Бронь {BookingId} переведена в статус Confirmed.", booking.Id);
+            }
+            catch (NotFoundException)
+            {
+                // Бронь удалили, пока мы её обрабатывали — это не ошибка,
+                // просто пропускаем и продолжаем с остальными.
+                _logger.LogInformation("Бронь {BookingId} исчезла до завершения обработки, пропускаем.", booking.Id);
+            }
         }
     }
 }
