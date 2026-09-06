@@ -1,3 +1,4 @@
+using System.Threading;
 using PracticumApi.Interfaces;
 using PracticumApi.Models;
 using PracticumApi.Exceptions;
@@ -6,7 +7,11 @@ namespace PracticumApi.Services;
 
 public class EventService() : IEventService
 {
-    private readonly List<Event> Events = [];
+    private readonly List<Event> _events = [];
+
+    // Сервис зарегистрирован как singleton, а обращения к нему идут из разных потоков
+    // (запросы + фоновый сервис), поэтому любой доступ к _events защищён этим замком.
+    private readonly Lock _sync = new();
 
     public PaginatedResult<Event> GetAll(
         string? title = null,
@@ -18,59 +23,77 @@ public class EventService() : IEventService
         // Валидация параметров пагинации
         if (page < 1)
             throw new ValidationException(nameof(page), "Номер страницы должен быть больше или равен 1");
-        
+
         if (pageSize < 1)
             throw new ValidationException(nameof(pageSize), "Размер страницы должен быть больше или равен 1");
-        
+
         if (pageSize > 100)
             throw new ValidationException(nameof(pageSize), "Размер страницы не может превышать 100");
 
-        var query = Events.AsEnumerable();
+        List<Event> filtered;
+        lock (_sync)
+        {
+            IEnumerable<Event> query = _events;
 
-        if(!string.IsNullOrWhiteSpace(title))
-            query = query.Where(x => !string.IsNullOrWhiteSpace(x.Title) && x.Title.Contains(title, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(title))
+                query = query.Where(x => !string.IsNullOrWhiteSpace(x.Title) && x.Title.Contains(title, StringComparison.OrdinalIgnoreCase));
 
-        if(from.HasValue)
-            query = query.Where(x => x.StartAt >= from.Value);
+            if (from.HasValue)
+                query = query.Where(x => x.StartAt >= from.Value);
 
-        if(to.HasValue)
-            query = query.Where(x => x.EndAt <= to.Value);
+            if (to.HasValue)
+                query = query.Where(x => x.EndAt <= to.Value);
 
-        var items = query.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+            // Материализуем отфильтрованный набор один раз: иначе фильтры и подсчёт
+            // выполнялись бы дважды и могли бы разойтись между собой.
+            filtered = query.ToList();
+        }
 
-        return new PaginatedResult<Event>(items, query.Count(), page, pageSize);
+        var items = filtered.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+
+        return new PaginatedResult<Event>(items, filtered.Count, page, pageSize);
     }
 
     public Event Get(Guid id)
     {
-        var eventItem = Events.FirstOrDefault(x => x.Id == id);
-        if (eventItem is null)
-            throw new NotFoundException("Event", id);
-        
-        return eventItem;
+        lock (_sync)
+        {
+            var eventItem = _events.FirstOrDefault(x => x.Id == id);
+            if (eventItem is null)
+                throw new NotFoundException("Event", id);
+
+            return eventItem;
+        }
     }
 
     public void Add(Event eventItem)
     {
         eventItem.Id = Guid.NewGuid();
-        Events.Add(eventItem);
+        lock (_sync)
+            _events.Add(eventItem);
     }
 
     public void Update(Event eventItem)
     {
-        var index = Events.FindIndex(x => x.Id == eventItem.Id);
-        if(index == -1)
-            throw new NotFoundException("Event", eventItem.Id);
+        lock (_sync)
+        {
+            var index = _events.FindIndex(x => x.Id == eventItem.Id);
+            if (index == -1)
+                throw new NotFoundException("Event", eventItem.Id);
 
-        Events[index] = eventItem;
+            _events[index] = eventItem;
+        }
     }
 
     public void Delete(Guid id)
     {
-        var eventItem = Events.FirstOrDefault(x => x.Id == id);
-        if(eventItem is null)
-            throw new NotFoundException("Event", id);
+        lock (_sync)
+        {
+            var eventItem = _events.FirstOrDefault(x => x.Id == id);
+            if (eventItem is null)
+                throw new NotFoundException("Event", id);
 
-        Events.Remove(eventItem);
+            _events.Remove(eventItem);
+        }
     }
 }

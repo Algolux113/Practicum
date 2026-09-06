@@ -33,7 +33,7 @@ public class NotFoundException : Exception
 {
     public NotFoundException(string message) : base(message) { }
     public NotFoundException(string resourceName, Guid id)
-        : base($"{resourceName} с ID {id} не найден") { }
+        : base($"Ресурс \"{resourceName}\" с ID {id} не найден") { }
 }
 ```
 
@@ -41,20 +41,26 @@ public class NotFoundException : Exception
 ```csharp
 public Event Get(Guid id)
 {
-    var eventItem = Events.FirstOrDefault(x => x.Id == id);
-    if (eventItem is null)
-        throw new NotFoundException("Event", id);
+    lock (_sync)
+    {
+        var eventItem = _events.FirstOrDefault(x => x.Id == id);
+        if (eventItem is null)
+            throw new NotFoundException("Event", id);
 
-    return eventItem;
+        return eventItem;
+    }
 }
 
 public void Delete(Guid id)
 {
-    var eventItem = Events.FirstOrDefault(x => x.Id == id);
-    if (eventItem is null)
-        throw new NotFoundException("Event", id);
+    lock (_sync)
+    {
+        var eventItem = _events.FirstOrDefault(x => x.Id == id);
+        if (eventItem is null)
+            throw new NotFoundException("Event", id);
 
-    Events.Remove(eventItem);
+        _events.Remove(eventItem);
+    }
 }
 ```
 
@@ -62,11 +68,14 @@ public void Delete(Guid id)
 ```csharp
 public Booking Get(Guid id)
 {
-    var booking = _bookings.FirstOrDefault(x => x.Id == id);
-    if (booking is null)
-        throw new NotFoundException("Booking", id);
+    lock (_sync)
+    {
+        var booking = _bookings.FirstOrDefault(x => x.Id == id);
+        if (booking is null)
+            throw new NotFoundException("Booking", id);
 
-    return booking;
+        return booking;
+    }
 }
 ```
 
@@ -77,7 +86,16 @@ public Task<Booking> CreateBookingAsync(Guid eventId)
     // Если событие не найдено — EventService.Get выбрасывает NotFoundException
     _eventService.Get(eventId);
 
-    var booking = Create(new Booking { EventId = eventId });
+    var booking = new Booking
+    {
+        Id = Guid.NewGuid(),
+        EventId = eventId,
+        Status = BookingStatus.Pending,
+        CreatedAt = DateTime.UtcNow,
+    };
+
+    lock (_sync)
+        _bookings.Add(booking);
 
     return Task.FromResult(booking);
 }
@@ -89,7 +107,7 @@ HTTP/1.1 404 Not Found
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "detail": "Ресурс \"Event\" с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
   "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/book"
 }
 ```
@@ -97,12 +115,12 @@ HTTP/1.1 404 Not Found
 **HTTP ответ:**
 ```
 HTTP/1.1 404 Not Found
-Content-Type: application/json
+Content-Type: application/problem+json
 
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "detail": "Ресурс \"Event\" с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
   "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
@@ -161,12 +179,20 @@ public class EventDTO : IValidatableObject
 }
 ```
 
+Ошибки уровня DTO (атрибуты `[Required]`, `IValidatableObject`) не проходят через
+middleware — их перехватывает конвейер MVC. Чтобы формат ответа совпадал с доменными
+`ValidationException`, в [`Program.cs`](PracticumApi/Program.cs) переопределён
+`ApiBehaviorOptions.InvalidModelStateResponseFactory`: он собирает сообщения об ошибках
+в одно поле `detail` и возвращает тот же `ProblemDetails` (`title` = "Validation error",
+статус 400, `Content-Type: application/problem+json`).
+
 **HTTP ответ:**
 ```
 HTTP/1.1 400 Bad Request
-Content-Type: application/json
+Content-Type: application/problem+json
 
 {
+  "type": "https://tools.ietf.org/html/rfc7231#section-6.5.1",
   "title": "Validation error",
   "status": 400,
   "detail": "Дата окончания должна быть больше даты начала.",
@@ -197,11 +223,27 @@ public class GlobalExceptionHandlingMiddleware(
 
     private async Task HandleException(HttpContext httpContext, Exception ex)
     {
-        _logger.LogError(ex,
-            "Unhandled exception. Method={Method}, Path={Path}, RequestId={RequestId}",
-            httpContext.Request.Method,
-            httpContext.Request.Path,
-            httpContext.Request.Headers["x-request-id"]);
+        var (statusCode, title, type) = MapStatusCode(ex);
+
+        var requestId = httpContext.Request.Headers.TryGetValue("x-request-id", out var header)
+            && !string.IsNullOrWhiteSpace(header)
+                ? header.ToString()
+                : httpContext.TraceIdentifier;
+
+        // 4xx — ожидаемые доменные ошибки, логируем их как Warning без стека;
+        // стек трасс приберегаем для настоящих 5xx.
+        if (statusCode >= StatusCodes.Status500InternalServerError)
+        {
+            _logger.LogError(ex,
+                "Unhandled exception. Method={Method}, Path={Path}, RequestId={RequestId}",
+                httpContext.Request.Method, httpContext.Request.Path, requestId);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Handled domain exception ({StatusCode}). Method={Method}, Path={Path}, RequestId={RequestId}, Detail={Detail}",
+                statusCode, httpContext.Request.Method, httpContext.Request.Path, requestId, ex.Message);
+        }
 
         // Если ответ уже начат, повторная запись невозможна
         if (httpContext.Response.HasStarted)
@@ -209,28 +251,28 @@ public class GlobalExceptionHandlingMiddleware(
             return;
         }
 
-        var (statusCode, title) = MapStatusCode(ex);
-
-        httpContext.Response.StatusCode = statusCode;
-        httpContext.Response.ContentType = "application/json";
-
         var error = new ProblemDetails
         {
             Status = statusCode,
             Title = title,
+            Type = type,
             Detail = ex.Message,
             Instance = httpContext.Request.Path
         };
 
-        await httpContext.Response.WriteAsJsonAsync(error);
+        httpContext.Response.StatusCode = statusCode;
+        await httpContext.Response.WriteAsJsonAsync(error, options: null, contentType: "application/problem+json");
     }
 
-    private static (int statusCode, string title) MapStatusCode(Exception ex)
+    private static (int statusCode, string title, string type) MapStatusCode(Exception ex)
         => ex switch
         {
-            NotFoundException => (StatusCodes.Status404NotFound, "Resource not found"),
-            ValidationException => (StatusCodes.Status400BadRequest, "Validation error"),
-            _ => (StatusCodes.Status500InternalServerError, "Internal server error")
+            NotFoundException => (StatusCodes.Status404NotFound, "Resource not found",
+                "https://tools.ietf.org/html/rfc7231#section-6.5.4"),
+            ValidationException => (StatusCodes.Status400BadRequest, "Validation error",
+                "https://tools.ietf.org/html/rfc7231#section-6.5.1"),
+            _ => (StatusCodes.Status500InternalServerError, "Internal server error",
+                "https://tools.ietf.org/html/rfc7231#section-6.6.1")
         };
 }
 ```
@@ -272,17 +314,17 @@ curl -X GET "https://localhost:7008/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 4. `GlobalExceptionHandlingMiddleware` перехватывает его
 5. Middleware определяет:
    - Тип: `NotFoundException` → статус 404
-   - Сообщение: "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден"
+   - Сообщение: `Ресурс "Event" с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден`
 
 **Ответ:**
 ```json
 HTTP/1.1 404 Not Found
-Content-Type: application/json
+Content-Type: application/problem+json
 
 {
   "title": "Resource not found",
   "status": 404,
-  "detail": "Event с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
+  "detail": "Ресурс \"Event\" с ID 3fa85f64-5717-4562-b3fc-2c963f66afa6 не найден",
   "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
@@ -312,7 +354,7 @@ curl -X GET "https://localhost:7008/events?page=0"
 **Ответ:**
 ```json
 HTTP/1.1 400 Bad Request
-Content-Type: application/json
+Content-Type: application/problem+json
 
 {
   "title": "Validation error",
@@ -409,12 +451,12 @@ public async Task Get_WithInvalidId_ShouldThrowNotFoundException()
 
 3. **Добавьте обработку в middleware:**
    ```csharp
-   private static (int statusCode, string title) MapStatusCode(Exception ex)
+   private static (int statusCode, string title, string type) MapStatusCode(Exception ex)
        => ex switch
        {
-           NotFoundException => (404, "Resource not found"),
-           BusinessLogicException => (409, "Conflict"),
-           _ => (500, "Internal server error")
+           NotFoundException => (404, "Resource not found", "https://tools.ietf.org/html/rfc7231#section-6.5.4"),
+           BusinessLogicException => (409, "Conflict", "https://tools.ietf.org/html/rfc7231#section-6.5.8"),
+           _ => (500, "Internal server error", "https://tools.ietf.org/html/rfc7231#section-6.6.1")
        };
    ```
 

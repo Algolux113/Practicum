@@ -4,15 +4,15 @@ namespace PracticumApi.Models;
 
 public class EventDTO : IValidatableObject
 {
-    [Required]
+    [Required(ErrorMessage = "Поле \"Title\" обязательно.")]
     public string? Title { get; set; }
 
     public string? Description { get; set; }
 
-    [Required]
+    [Required(ErrorMessage = "Поле \"StartAt\" обязательно.")]
     public DateTime? StartAt { get; set; }
 
-    [Required]
+    [Required(ErrorMessage = "Поле \"EndAt\" обязательно.")]
     public DateTime? EndAt { get; set; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
