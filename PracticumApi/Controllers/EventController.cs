@@ -11,6 +11,8 @@ public class EventController(IEventService eventService) : ControllerBase
     private readonly IEventService _eventService = eventService;
 
     [HttpGet]
+    [ProducesResponseType(typeof(PaginatedResult<Event>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public ActionResult<PaginatedResult<Event>> GetAll(
         [FromQuery] string? title = null,
         [FromQuery] DateTime? from = null,
@@ -20,6 +22,8 @@ public class EventController(IEventService eventService) : ControllerBase
     ) => _eventService.GetAll(title, from, to, page, pageSize);
 
     [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(Event), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public ActionResult<Event> Get(Guid id)
     {
         var eventItem = _eventService.Get(id);
@@ -27,6 +31,8 @@ public class EventController(IEventService eventService) : ControllerBase
     }
 
     [HttpPost]
+    [ProducesResponseType(typeof(Event), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public IActionResult Create(EventDTO eventDTO)
     {
         // StartAt/EndAt/TotalSeats гарантированно заданы: [Required] + IValidatableObject уже отработали.
@@ -42,6 +48,9 @@ public class EventController(IEventService eventService) : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public IActionResult Update(Guid id, EventDTO eventDTO)
     {
         // Проверяем существование события; отсутствие — это 404.
@@ -69,6 +78,8 @@ public class EventController(IEventService eventService) : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public IActionResult Delete(Guid id)
     {
         _eventService.Delete(id);

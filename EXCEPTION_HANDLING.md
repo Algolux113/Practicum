@@ -528,7 +528,16 @@ public async Task CreateBookingAsync_WhenNoSeatsRemaining_ShouldThrowNoAvailable
        };
    ```
 
-> `NoAvailableSeatsException` (см. выше) — реальный пример именно такого расширения: собственное исключение + бросок из `EventService.ReserveSeats` + кейс в `MapStatusCode` → `409 Conflict`.
+4. **Пометьте экшены, которые могут его бросить, `[ProducesResponseType]`:**
+   ```csharp
+   [HttpPost]
+   [ProducesResponseType(typeof(Booking), StatusCodes.Status202Accepted)]
+   [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+   public async Task<IActionResult> Book(Guid id) { ... }
+   ```
+   Middleware работает вне MVC-конвейера, поэтому генератор OpenAPI (`Microsoft.AspNetCore.OpenApi`, `AddOpenApi()`/`MapOpenApi()` в [`Program.cs`](PracticumApi/Program.cs)) о нём не знает — без явного атрибута новый код ответа не попадёт в `/openapi/v1.json` и не будет виден в Swagger UI, даже если middleware уже умеет его возвращать.
+
+> `NoAvailableSeatsException` (см. выше) — реальный пример именно такого расширения: собственное исключение + бросок из `EventService.ReserveSeats` + кейс в `MapStatusCode` → `409 Conflict` + `[ProducesResponseType]` на `BookingController.Book`.
 
 ## Преимущества текущей архитектуры
 

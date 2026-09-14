@@ -11,6 +11,8 @@ public class BookingController(IBookingService bookingService) : ControllerBase
     private readonly IBookingService _bookingService = bookingService;
 
     [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(Booking), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public ActionResult<Booking> Get(Guid id)
     {
         // Если бронь не найдена, BookingService.Get выбрасывает NotFoundException → 404.
@@ -20,9 +22,9 @@ public class BookingController(IBookingService bookingService) : ControllerBase
     }
 
     [HttpPost("/events/{id:guid}/book")]
-    [ProducesResponseType(StatusCodes.Status202Accepted)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(Booking), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Book(Guid id)
     {
         var booking = await _bookingService.CreateBookingAsync(id);

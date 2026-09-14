@@ -37,7 +37,7 @@ dotnet test --verbosity normal
 
 ## Формат ошибок API
 
-Все ошибки возвращаются в единообразном формате JSON (RFC 7807 - Problem Details):
+Все ошибки возвращаются в единообразном формате JSON (RFC 7807 - Problem Details). Каждый экшен в `EventController` и `BookingController` помечен `[ProducesResponseType]` для всех кодов, которые он реально может вернуть (успех + доменные исключения) — без этого встроенный генератор `Microsoft.AspNetCore.OpenApi` не знает про ответы, брошенные из `GlobalExceptionHandlingMiddleware`, и в Swagger UI / `/openapi/v1.json` был бы виден только один код (обычно неверный «200 OK» вместо, например, реальных 201/202/204).
 
 ```json
 {
