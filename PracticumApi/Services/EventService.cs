@@ -96,4 +96,32 @@ public class EventService() : IEventService
             _events.Remove(eventItem);
         }
     }
+
+    public void ReserveSeats(Guid id, int count = 1)
+    {
+        // Проверка наличия события и резерв мест выполняются под одним замком,
+        // иначе параллельные бронирования могли бы обе пройти TryReserveSeats
+        // и увести AvailableSeats в минус.
+        lock (_sync)
+        {
+            var eventItem = _events.FirstOrDefault(x => x.Id == id);
+            if (eventItem is null)
+                throw new NotFoundException("Event", id);
+
+            if (!eventItem.TryReserveSeats(count))
+                throw new NoAvailableSeatsException();
+        }
+    }
+
+    public void ReleaseSeats(Guid id, int count = 1)
+    {
+        lock (_sync)
+        {
+            var eventItem = _events.FirstOrDefault(x => x.Id == id);
+            if (eventItem is null)
+                throw new NotFoundException("Event", id);
+
+            eventItem.ReleaseSeats(count);
+        }
+    }
 }

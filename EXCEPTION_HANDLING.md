@@ -10,11 +10,12 @@
 PracticumApi/
 ├── Exceptions/
 │   ├── NotFoundException.cs          # Ресурс не найден
-│   └── ValidationException.cs        # Ошибка валидации
+│   ├── ValidationException.cs        # Ошибка валидации
+│   └── NoAvailableSeatsException.cs  # Нет свободных мест на событии
 ├── Services/
 │   ├── EventService.cs               # Сервис событий выбрасывает исключения
 │   ├── BookingService.cs             # Сервис бронирований также выбрасывает исключения
-│   └── BookingProcessingService.cs   # Фоновый сервис (BackgroundService) подтверждает Pending-брони
+│   └── BookingProcessingService.cs   # Фоновый сервис (BackgroundService) подтверждает/отклоняет Pending-брони
 ├── Controllers/
 │   ├── EventController.cs            # Контроллер событий полагается на middleware
 │   └── BookingController.cs          # Контроллер бронирований полагается на middleware
@@ -83,8 +84,9 @@ public Booking Get(Guid id)
 ```csharp
 public Task<Booking> CreateBookingAsync(Guid eventId)
 {
-    // Если событие не найдено — EventService.Get выбрасывает NotFoundException
-    _eventService.Get(eventId);
+    // Атомарно проверяет событие и резервирует место:
+    // NotFoundException, если события нет, NoAvailableSeatsException — если мест не осталось.
+    _eventService.ReserveSeats(eventId);
 
     var booking = new Booking
     {
@@ -200,6 +202,51 @@ Content-Type: application/problem+json
 }
 ```
 
+### NoAvailableSeatsException
+
+Выбрасывается, когда на событии не осталось свободных мест.
+
+```csharp
+public class NoAvailableSeatsException() : Exception("Нет свободных мест на это событие")
+{
+}
+```
+
+**Пример использования** (`IEventService.ReserveSeats` в [`EventService`](PracticumApi/Services/EventService.cs)):
+```csharp
+public void ReserveSeats(Guid id, int count = 1)
+{
+    // Проверка наличия события и резерв мест выполняются под одним замком,
+    // иначе параллельные бронирования могли бы обе пройти TryReserveSeats
+    // и увести AvailableSeats в минус.
+    lock (_sync)
+    {
+        var eventItem = _events.FirstOrDefault(x => x.Id == id);
+        if (eventItem is null)
+            throw new NotFoundException("Event", id);
+
+        if (!eventItem.TryReserveSeats(count))
+            throw new NoAvailableSeatsException();
+    }
+}
+```
+
+`BookingService.CreateBookingAsync` вызывает `ReserveSeats` перед созданием брони, поэтому `POST /events/{id}/book` на событие без свободных мест вернёт `409 Conflict`:
+
+**HTTP ответ:**
+```
+HTTP/1.1 409 Conflict
+Content-Type: application/problem+json
+
+{
+  "type": "https://tools.ietf.org/html/rfc7231#section-6.5.8",
+  "title": "No available seats",
+  "status": 409,
+  "detail": "Нет свободных мест на это событие",
+  "instance": "/events/3fa85f64-5717-4562-b3fc-2c963f66afa6/book"
+}
+```
+
 ## Middleware обработки исключений
 
 **GlobalExceptionHandlingMiddleware** перехватывает все необработанные исключения:
@@ -271,6 +318,8 @@ public class GlobalExceptionHandlingMiddleware(
                 "https://tools.ietf.org/html/rfc7231#section-6.5.4"),
             ValidationException => (StatusCodes.Status400BadRequest, "Validation error",
                 "https://tools.ietf.org/html/rfc7231#section-6.5.1"),
+            NoAvailableSeatsException => (StatusCodes.Status409Conflict, "No available seats",
+                "https://tools.ietf.org/html/rfc7231#section-6.5.8"),
             _ => (StatusCodes.Status500InternalServerError, "Internal server error",
                 "https://tools.ietf.org/html/rfc7231#section-6.6.1")
         };
@@ -374,7 +423,7 @@ Content-Type: application/problem+json
 Интеграционные тесты проверяют, что исключения выбрасываются в правильных сценариях:
 
 - `EventServiceIntegrationTests` — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации). Это один `partial`-класс, разбитый по файлам: сценарии `NotFoundException` — в [`EventServiceCrudTests.cs`](PracticumTests/EventServiceCrudTests.cs), сценарии `ValidationException` по пагинации — в [`EventServicePaginationTests.cs`](PracticumTests/EventServicePaginationTests.cs).
-- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает `NotFoundException` при создании брони для несуществующего или удалённого события, а также при получении брони по несуществующему ID.
+- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает `NotFoundException` при создании брони для несуществующего или удалённого события и при получении брони по несуществующему ID, а также `NoAvailableSeatsException` при исчерпании мест (последовательно и в конкурентных сценариях).
 
 **Примеры из `EventServiceIntegrationTests`** (`Get_WithInvalidId_...` — в `EventServiceCrudTests.cs`, `GetAll_WithPageZero_...` — в `EventServicePaginationTests.cs`):
 
@@ -404,7 +453,7 @@ public void GetAll_WithPageZero_ShouldThrowValidationException()
 
 **Примеры из `BookingServiceIntegrationTests`:**
 
-> Примечание: `BookingService` принимает `IEventService` в конструкторе, поэтому тесты создают оба сервиса совместно.
+> Примечание: `BookingService` принимает `IEventService` в конструкторе, поэтому тесты создают оба сервиса совместно. Хелпер `CreateTestEvent(eventService, totalSeats = 100)` создаёт событие через `Event.Create` с заданной вместимостью.
 
 ```csharp
 [Fact]
@@ -423,13 +472,28 @@ public async Task Get_WithInvalidId_ShouldThrowNotFoundException()
 {
     // Arrange
     var (bookingService, eventService) = CreateServices();
-    var eventId = CreateEvent(eventService);
+    var eventId = CreateTestEvent(eventService);
     await bookingService.CreateBookingAsync(eventId);
 
     // Act & Assert
     Assert.Throws<NotFoundException>(() => bookingService.Get(Guid.NewGuid()));
 }
+
+[Fact]
+public async Task CreateBookingAsync_WhenNoSeatsRemaining_ShouldThrowNoAvailableSeatsException()
+{
+    // Arrange
+    var (bookingService, eventService) = CreateServices();
+    var eventId = CreateTestEvent(eventService, totalSeats: 1);
+    await bookingService.CreateBookingAsync(eventId);
+
+    // Act & Assert
+    await Assert.ThrowsAsync<NoAvailableSeatsException>(() =>
+        bookingService.CreateBookingAsync(eventId));
+}
 ```
+
+`BookingServiceIntegrationTests` также содержит регион `#region Конкурентность` с тестами на гонки при резервировании мест: N конкурентных запросов на событие с ограниченной вместимостью должны дать ровно `totalSeats` успешных броней и `NoAvailableSeatsException` для остальных, без превышения `AvailableSeats` ниже нуля.
 
 ## Расширение системы
 
@@ -459,6 +523,8 @@ public async Task Get_WithInvalidId_ShouldThrowNotFoundException()
            _ => (500, "Internal server error", "https://tools.ietf.org/html/rfc7231#section-6.6.1")
        };
    ```
+
+> `NoAvailableSeatsException` (см. выше) — реальный пример именно такого расширения: собственное исключение + бросок из `EventService.ReserveSeats` + кейс в `MapStatusCode` → `409 Conflict`.
 
 ## Преимущества текущей архитектуры
 

@@ -82,6 +82,10 @@ public class GlobalExceptionHandlingMiddleware(
                 StatusCodes.Status400BadRequest,
                 "Validation error",
                 "https://tools.ietf.org/html/rfc7231#section-6.5.1"),
+            NoAvailableSeatsException => (
+                StatusCodes.Status409Conflict,
+                "No available seats",
+                "https://tools.ietf.org/html/rfc7231#section-6.5.8"),
             _ => (
                 StatusCodes.Status500InternalServerError,
                 "Internal server error",

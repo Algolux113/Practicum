@@ -18,4 +18,12 @@ public class BookingController(IBookingService bookingService) : ControllerBase
 
         return Ok(booking);
     }
+
+    [HttpPost("/events/{id:guid}/book")]
+    public async Task<IActionResult> Book(Guid id)
+    {
+        var booking = await _bookingService.CreateBookingAsync(id);
+
+        return Accepted($"/bookings/{booking.Id}", booking);
+    }
 }

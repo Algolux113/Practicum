@@ -6,12 +6,9 @@ namespace PracticumApi.Controllers;
 
 [ApiController]
 [Route("events")]
-public class EventController(
-    IEventService eventService,
-    IBookingService bookingService) : ControllerBase
+public class EventController(IEventService eventService) : ControllerBase
 {
     private readonly IEventService _eventService = eventService;
-    private readonly IBookingService _bookingService = bookingService;
 
     [HttpGet]
     public ActionResult<PaginatedResult<Event>> GetAll(
@@ -32,14 +29,13 @@ public class EventController(
     [HttpPost]
     public IActionResult Create(EventDTO eventDTO)
     {
-        var eventItem = new Event
-        {
-            Title = eventDTO.Title,
-            Description = eventDTO.Description,
-            // StartAt/EndAt гарантированно заданы: [Required] + IValidatableObject уже отработали.
-            StartAt = eventDTO.StartAt!.Value,
-            EndAt = eventDTO.EndAt!.Value,
-        };
+        // StartAt/EndAt/TotalSeats гарантированно заданы: [Required] + IValidatableObject уже отработали.
+        var eventItem = Event.Create(
+            eventDTO.Title,
+            eventDTO.Description,
+            eventDTO.StartAt!.Value,
+            eventDTO.EndAt!.Value,
+            eventDTO.TotalSeats!.Value);
 
         _eventService.Add(eventItem);
         return CreatedAtAction(nameof(Get), new { id = eventItem.Id }, eventItem);
@@ -49,10 +45,13 @@ public class EventController(
     public IActionResult Update(Guid id, EventDTO eventDTO)
     {
         // Проверяем существование события; отсутствие — это 404.
-        _eventService.Get(id);
+        var existingEvent = _eventService.Get(id);
 
         // Собираем новый объект и отдаём его сервису целиком, не мутируя хранимую сущность
         // напрямую: так контракт Update (найти и заменить) остаётся честным.
+        // AvailableSeats пересчитывается относительно нового TotalSeats, а не переносится
+        // как есть — иначе смена вместимости могла бы нарушить инвариант
+        // AvailableSeats <= TotalSeats (или "потерять" вновь добавленные места).
         var updatedEvent = new Event
         {
             Id = id,
@@ -60,19 +59,13 @@ public class EventController(
             Description = eventDTO.Description,
             StartAt = eventDTO.StartAt!.Value,
             EndAt = eventDTO.EndAt!.Value,
+            TotalSeats = eventDTO.TotalSeats!.Value,
+            AvailableSeats = existingEvent.RecalculateAvailableSeats(eventDTO.TotalSeats!.Value),
         };
 
         _eventService.Update(updatedEvent);
 
         return NoContent();
-    }
-
-    [HttpPost("{id:guid}/book")]
-    public async Task<IActionResult> Book(Guid id)
-    {
-        var booking = await _bookingService.CreateBookingAsync(id);
-
-        return Accepted($"/bookings/{booking.Id}", booking);
     }
 
     [HttpDelete("{id:guid}")]

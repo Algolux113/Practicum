@@ -42,8 +42,9 @@ public class BookingService(IEventService eventService) : IBookingService
 
     public Task<Booking> CreateBookingAsync(Guid eventId)
     {
-        // Проверяем, что событие существует; если нет — будет выброшено NotFoundException (404).
-        _eventService.Get(eventId);
+        // Атомарно проверяем событие и резервируем место: NotFoundException (404), если
+        // события нет, NoAvailableSeatsException (409), если мест не осталось.
+        _eventService.ReserveSeats(eventId);
 
         var booking = new Booking
         {

@@ -26,6 +26,11 @@ public class BookingProcessingService(
     /// </summary>
     private static readonly TimeSpan ExternalSystemDelay = TimeSpan.FromSeconds(2);
 
+    // Параллельные задачи обрабатывают разные брони одновременно, но запись в хранилище
+    // сериализуем через семафор: BookingService.Update и так потокобезопасен изнутри,
+    // но здесь мы явно гарантируем, что в один момент времени пишет только одна задача.
+    private readonly SemaphoreSlim _writeSemaphore = new(1, 1);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Фоновый сервис обработки бронирований запущен.");
@@ -64,6 +69,7 @@ public class BookingProcessingService(
     {
         using var scope = _scopeFactory.CreateScope();
         var bookingService = scope.ServiceProvider.GetRequiredService<IBookingService>();
+        var eventService = scope.ServiceProvider.GetRequiredService<IEventService>();
 
         var pendingBookings = bookingService.GetAll()
             .Where(b => b.Status == BookingStatus.Pending)
@@ -74,28 +80,103 @@ public class BookingProcessingService(
 
         _logger.LogInformation("Найдено {Count} бронирований в статусе Pending.", pendingBookings.Count);
 
-        foreach (var booking in pendingBookings)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
+        // Каждая бронь обрабатывается независимо, поэтому имитацию обращения к внешней
+        // системе запускаем параллельно, а не ждём 2 секунды на каждую бронь по очереди.
+        var processingTasks = pendingBookings.Select(booking =>
+            ProcessBookingAsync(bookingService, eventService, booking, cancellationToken));
 
-            // Имитация обращения к внешней системе.
-            await Task.Delay(ExternalSystemDelay, cancellationToken);
+        await Task.WhenAll(processingTasks);
+    }
+
+    private async Task ProcessBookingAsync(
+        IBookingService bookingService,
+        IEventService eventService,
+        Booking booking,
+        CancellationToken cancellationToken)
+    {
+        // Имитация обращения к внешней системе выполняется до захвата семафора,
+        // чтобы задержки для разных броней не блокировали друг друга.
+        await Task.Delay(ExternalSystemDelay, cancellationToken);
+
+        await _writeSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            // Событие могли удалить, пока бронь ждала обработки — тогда подтверждать нечего.
+            if (!EventExists(eventService, booking.EventId))
+            {
+                booking.Reject();
+                bookingService.Update(booking);
+
+                _logger.LogWarning(
+                    "Событие {EventId} для брони {BookingId} не найдено, бронь отклонена.",
+                    booking.EventId,
+                    booking.Id);
+                return;
+            }
+
+            booking.Confirm();
+            bookingService.Update(booking);
+
+            _logger.LogInformation("Бронь {BookingId} переведена в статус Confirmed.", booking.Id);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (NotFoundException)
+        {
+            // Бронь удалили, пока мы её обрабатывали — это не ошибка,
+            // просто пропускаем и продолжаем с остальными.
+            _logger.LogInformation("Бронь {BookingId} исчезла до завершения обработки, пропускаем.", booking.Id);
+        }
+        catch (Exception ex)
+        {
+            // Неожиданная ошибка при подтверждении: откатываемся — отклоняем бронь
+            // и возвращаем место в событие, чтобы оно не пропало впустую.
+            _logger.LogError(ex, "Не удалось обработать бронь {BookingId}, отклоняем и возвращаем место.", booking.Id);
+
+            booking.Reject();
 
             try
             {
-                booking.Status = BookingStatus.Confirmed;
-                booking.ProcessedAt = DateTime.UtcNow;
-
-                bookingService.Update(booking);
-
-                _logger.LogInformation("Бронь {BookingId} переведена в статус Confirmed.", booking.Id);
+                eventService.ReleaseSeats(booking.EventId);
             }
             catch (NotFoundException)
             {
-                // Бронь удалили, пока мы её обрабатывали — это не ошибка,
-                // просто пропускаем и продолжаем с остальными.
-                _logger.LogInformation("Бронь {BookingId} исчезла до завершения обработки, пропускаем.", booking.Id);
+                // Событие уже удалено — освобождать место некуда.
+            }
+
+            try
+            {
+                bookingService.Update(booking);
+            }
+            catch (NotFoundException)
+            {
+                // Бронь тоже удалили — сохранять отказ уже некуда.
             }
         }
+        finally
+        {
+            _writeSemaphore.Release();
+        }
+    }
+
+    private static bool EventExists(IEventService eventService, Guid eventId)
+    {
+        try
+        {
+            eventService.Get(eventId);
+            return true;
+        }
+        catch (NotFoundException)
+        {
+            return false;
+        }
+    }
+
+    public override void Dispose()
+    {
+        _writeSemaphore.Dispose();
+        base.Dispose();
     }
 }
