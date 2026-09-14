@@ -1,17 +1,17 @@
-using System.Threading;
 using PracticumApi.Interfaces;
 using PracticumApi.Models;
 using PracticumApi.Exceptions;
 
 namespace PracticumApi.Services;
 
-public class EventService() : IEventService
+public class EventService() : IEventService, IDisposable
 {
     private readonly List<Event> _events = [];
 
-    // Сервис зарегистрирован как singleton, а обращения к нему идут из разных потоков
-    // (запросы + фоновый сервис), поэтому любой доступ к _events защищён этим замком.
-    private readonly Lock _sync = new();
+    // Сервис — singleton, к нему обращаются запросы и фоновый сервис из разных потоков.
+    // ReaderWriterLockSlim вместо обычного lock: чтения (GetAll/Get) не блокируют друг
+    // друга, эксклюзивным остаётся только доступ на запись (Add/Update/Delete/Reserve/Release).
+    private readonly ReaderWriterLockSlim _sync = new();
 
     public PaginatedResult<Event> GetAll(
         string? title = null,
@@ -31,7 +31,8 @@ public class EventService() : IEventService
             throw new ValidationException(nameof(pageSize), "Размер страницы не может превышать 100");
 
         List<Event> filtered;
-        lock (_sync)
+        _sync.EnterReadLock();
+        try
         {
             IEnumerable<Event> query = _events;
 
@@ -48,6 +49,10 @@ public class EventService() : IEventService
             // выполнялись бы дважды и могли бы разойтись между собой.
             filtered = query.ToList();
         }
+        finally
+        {
+            _sync.ExitReadLock();
+        }
 
         var items = filtered.Skip((page - 1) * pageSize).Take(pageSize).ToList();
 
@@ -56,7 +61,8 @@ public class EventService() : IEventService
 
     public Event Get(Guid id)
     {
-        lock (_sync)
+        _sync.EnterReadLock();
+        try
         {
             var eventItem = _events.FirstOrDefault(x => x.Id == id);
             if (eventItem is null)
@@ -64,18 +70,30 @@ public class EventService() : IEventService
 
             return eventItem;
         }
+        finally
+        {
+            _sync.ExitReadLock();
+        }
     }
 
     public void Add(Event eventItem)
     {
         eventItem.Id = Guid.NewGuid();
-        lock (_sync)
+        _sync.EnterWriteLock();
+        try
+        {
             _events.Add(eventItem);
+        }
+        finally
+        {
+            _sync.ExitWriteLock();
+        }
     }
 
     public void Update(Event eventItem)
     {
-        lock (_sync)
+        _sync.EnterWriteLock();
+        try
         {
             var index = _events.FindIndex(x => x.Id == eventItem.Id);
             if (index == -1)
@@ -83,11 +101,16 @@ public class EventService() : IEventService
 
             _events[index] = eventItem;
         }
+        finally
+        {
+            _sync.ExitWriteLock();
+        }
     }
 
     public void Delete(Guid id)
     {
-        lock (_sync)
+        _sync.EnterWriteLock();
+        try
         {
             var eventItem = _events.FirstOrDefault(x => x.Id == id);
             if (eventItem is null)
@@ -95,5 +118,53 @@ public class EventService() : IEventService
 
             _events.Remove(eventItem);
         }
+        finally
+        {
+            _sync.ExitWriteLock();
+        }
+    }
+
+    public void ReserveSeats(Guid id, int count = 1)
+    {
+        // Резерв места мутирует AvailableSeats, поэтому нужен эксклюзивный write-lock:
+        // иначе два читателя могли бы одновременно пройти TryReserveSeats и увести
+        // AvailableSeats в минус.
+        _sync.EnterWriteLock();
+        try
+        {
+            var eventItem = _events.FirstOrDefault(x => x.Id == id);
+            if (eventItem is null)
+                throw new NotFoundException("Event", id);
+
+            if (!eventItem.TryReserveSeats(count))
+                throw new NoAvailableSeatsException();
+        }
+        finally
+        {
+            _sync.ExitWriteLock();
+        }
+    }
+
+    public void ReleaseSeats(Guid id, int count = 1)
+    {
+        _sync.EnterWriteLock();
+        try
+        {
+            var eventItem = _events.FirstOrDefault(x => x.Id == id);
+            if (eventItem is null)
+                throw new NotFoundException("Event", id);
+
+            eventItem.ReleaseSeats(count);
+        }
+        finally
+        {
+            _sync.ExitWriteLock();
+        }
+    }
+
+    public void Dispose()
+    {
+        _sync.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

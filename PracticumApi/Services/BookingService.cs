@@ -42,9 +42,8 @@ public class BookingService(IEventService eventService) : IBookingService
 
     public Task<Booking> CreateBookingAsync(Guid eventId)
     {
-        // Проверяем, что событие существует; если нет — будет выброшено NotFoundException (404).
-        _eventService.Get(eventId);
-
+        // Объект брони не трогает общее состояние, поэтому собирается до входа в lock —
+        // критическая секция ниже держит замок минимально необходимое время.
         var booking = new Booking
         {
             Id = Guid.NewGuid(),
@@ -53,8 +52,13 @@ public class BookingService(IEventService eventService) : IBookingService
             CreatedAt = DateTime.UtcNow,
         };
 
+        // Резерв места и добавление брони — атомарная пара под одним замком, иначе
+        // между ними мог бы вклиниться другой вызов CreateBookingAsync.
         lock (_sync)
+        {
+            _eventService.ReserveSeats(eventId);
             _bookings.Add(booking);
+        }
 
         return Task.FromResult(booking);
     }

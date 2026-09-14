@@ -15,6 +15,10 @@ public class EventDTO : IValidatableObject
     [Required(ErrorMessage = "Поле \"EndAt\" обязательно.")]
     public DateTime? EndAt { get; set; }
 
+    [Required(ErrorMessage = "Поле \"TotalSeats\" обязательно.")]
+    [Range(1, int.MaxValue, ErrorMessage = "Поле \"TotalSeats\" должно быть больше 0.")]
+    public int? TotalSeats { get; set; }
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (EndAt <= StartAt)

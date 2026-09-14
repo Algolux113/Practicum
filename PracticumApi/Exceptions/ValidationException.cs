@@ -9,7 +9,7 @@ public class ValidationException : Exception
     {
     }
 
-    public ValidationException(string fieldName, string message) 
+    public ValidationException(string fieldName, string message)
         : base($"Ошибка валидации поля '{fieldName}': {message}")
     {
     }

@@ -119,6 +119,24 @@ public partial class EventServiceIntegrationTests
         Assert.Throws<NotFoundException>(() => eventService.Get(newEvent.Id));
     }
 
+    /// <summary>
+    /// Тест: RecalculateAvailableSeats допускает уменьшение TotalSeats ровно до числа
+    /// уже занятых мест — AvailableSeats становится 0
+    /// </summary>
+    [Fact]
+    public void RecalculateAvailableSeats_EqualToTakenSeats_ShouldReturnZero()
+    {
+        // Arrange
+        var eventItem = Event.Create("Conference", null, DateTime.Now, DateTime.Now.AddHours(1), totalSeats: 10);
+        eventItem.TryReserveSeats(7);
+
+        // Act
+        var result = eventItem.RecalculateAvailableSeats(7);
+
+        // Assert
+        Assert.Equal(0, result);
+    }
+
     #endregion
 
     #region Неуспешные сценарии
@@ -185,6 +203,21 @@ public partial class EventServiceIntegrationTests
 
         // Act & Assert
         Assert.Throws<NotFoundException>(() => eventService.Delete(Guid.NewGuid()));
+    }
+
+    /// <summary>
+    /// Тест: нельзя уменьшить TotalSeats ниже числа уже занятых мест — иначе фоновый
+    /// сервис мог бы подтвердить больше Pending-броней, чем есть физических мест
+    /// </summary>
+    [Fact]
+    public void RecalculateAvailableSeats_BelowTakenSeats_ShouldThrowValidationException()
+    {
+        // Arrange
+        var eventItem = Event.Create("Conference", null, DateTime.Now, DateTime.Now.AddHours(1), totalSeats: 10);
+        eventItem.TryReserveSeats(7); // занято 7 мест из 10
+
+        // Act & Assert
+        Assert.Throws<ValidationException>(() => eventItem.RecalculateAvailableSeats(5));
     }
 
     #endregion
