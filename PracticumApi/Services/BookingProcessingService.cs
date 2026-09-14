@@ -26,9 +26,10 @@ public class BookingProcessingService(
     /// </summary>
     private static readonly TimeSpan ProcessingDelay = TimeSpan.FromSeconds(2);
 
-    // Параллельные задачи обрабатывают разные брони одновременно, но запись в хранилище
-    // сериализуем через семафор: BookingService.Update и так потокобезопасен изнутри,
-    // но здесь мы явно гарантируем, что в один момент времени пишет только одна задача.
+    // Параллельные задачи обрабатывают разные брони одновременно; семафор сериализует
+    // только сам вызов BookingService.Update (он и так потокобезопасен изнутри, но здесь
+    // мы явно гарантируем, что в один момент времени пишет только одна задача). Проверка
+    // события и Confirm()/Reject() — не запись в это хранилище, поэтому семафор их не держит.
     private readonly SemaphoreSlim _writeSemaphore = new(1, 1);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -105,14 +106,13 @@ public class BookingProcessingService(
         // чтобы задержки для разных броней не блокировали друг друга.
         await Task.Delay(ProcessingDelay, cancellationToken);
 
-        await _writeSemaphore.WaitAsync(cancellationToken);
         try
         {
             // Событие могли удалить, пока бронь ждала обработки — тогда подтверждать нечего.
             if (!EventExists(eventService, booking.EventId))
             {
                 booking.Reject();
-                bookingService.Update(booking);
+                await UpdateBookingAsync(bookingService, booking, cancellationToken);
 
                 _logger.LogWarning(
                     "Событие {EventId} для брони {BookingId} не найдено, бронь отклонена.",
@@ -122,7 +122,7 @@ public class BookingProcessingService(
             }
 
             booking.Confirm();
-            bookingService.Update(booking);
+            await UpdateBookingAsync(bookingService, booking, cancellationToken);
 
             _logger.LogInformation("Бронь {BookingId} переведена в статус Confirmed.", booking.Id);
         }
@@ -155,16 +155,12 @@ public class BookingProcessingService(
 
             try
             {
-                bookingService.Update(booking);
+                await UpdateBookingAsync(bookingService, booking, cancellationToken);
             }
             catch (NotFoundException)
             {
                 // Бронь тоже удалили — сохранять отказ уже некуда.
             }
-        }
-        finally
-        {
-            _writeSemaphore.Release();
         }
     }
 
@@ -178,6 +174,19 @@ public class BookingProcessingService(
         catch (NotFoundException)
         {
             return false;
+        }
+    }
+
+    private async Task UpdateBookingAsync(IBookingService bookingService, Booking booking, CancellationToken cancellationToken)
+    {
+        await _writeSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            bookingService.Update(booking);
+        }
+        finally
+        {
+            _writeSemaphore.Release();
         }
     }
 

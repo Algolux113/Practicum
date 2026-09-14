@@ -38,11 +38,12 @@ public class NotFoundException : Exception
 }
 ```
 
-**Примеры использования в EventService:**
+**Примеры использования в EventService** (`_sync` — `ReaderWriterLockSlim`: `Get` берёт read-lock и не блокирует другие чтения, `Delete` — эксклюзивный write-lock):
 ```csharp
 public Event Get(Guid id)
 {
-    lock (_sync)
+    _sync.EnterReadLock();
+    try
     {
         var eventItem = _events.FirstOrDefault(x => x.Id == id);
         if (eventItem is null)
@@ -50,17 +51,26 @@ public Event Get(Guid id)
 
         return eventItem;
     }
+    finally
+    {
+        _sync.ExitReadLock();
+    }
 }
 
 public void Delete(Guid id)
 {
-    lock (_sync)
+    _sync.EnterWriteLock();
+    try
     {
         var eventItem = _events.FirstOrDefault(x => x.Id == id);
         if (eventItem is null)
             throw new NotFoundException("Event", id);
 
         _events.Remove(eventItem);
+    }
+    finally
+    {
+        _sync.ExitWriteLock();
     }
 }
 ```
@@ -220,10 +230,11 @@ public class NoAvailableSeatsException() : Exception("Нет свободных 
 ```csharp
 public void ReserveSeats(Guid id, int count = 1)
 {
-    // Проверка наличия события и резерв мест выполняются под одним замком,
-    // иначе параллельные бронирования могли бы обе пройти TryReserveSeats
-    // и увести AvailableSeats в минус.
-    lock (_sync)
+    // Резерв места мутирует AvailableSeats, поэтому нужен эксклюзивный write-lock:
+    // иначе два читателя могли бы одновременно пройти TryReserveSeats и увести
+    // AvailableSeats в минус.
+    _sync.EnterWriteLock();
+    try
     {
         var eventItem = _events.FirstOrDefault(x => x.Id == id);
         if (eventItem is null)
@@ -231,6 +242,10 @@ public void ReserveSeats(Guid id, int count = 1)
 
         if (!eventItem.TryReserveSeats(count))
             throw new NoAvailableSeatsException();
+    }
+    finally
+    {
+        _sync.ExitWriteLock();
     }
 }
 ```
@@ -426,7 +441,7 @@ Content-Type: application/problem+json
 
 Интеграционные тесты проверяют, что исключения выбрасываются в правильных сценариях:
 
-- `EventServiceIntegrationTests` — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации). Это один `partial`-класс, разбитый по файлам: сценарии `NotFoundException` — в [`EventServiceCrudTests.cs`](PracticumTests/EventServiceCrudTests.cs), сценарии `ValidationException` по пагинации — в [`EventServicePaginationTests.cs`](PracticumTests/EventServicePaginationTests.cs).
+- `EventServiceIntegrationTests` — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации, а также `Event.RecalculateAvailableSeats` при попытке уменьшить `TotalSeats` ниже числа занятых мест). Это один `partial`-класс, разбитый по файлам: сценарии `NotFoundException` и `RecalculateAvailableSeats` — в [`EventServiceCrudTests.cs`](PracticumTests/EventServiceCrudTests.cs), сценарии `ValidationException` по пагинации — в [`EventServicePaginationTests.cs`](PracticumTests/EventServicePaginationTests.cs).
 - [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает `NotFoundException` при создании брони для несуществующего или удалённого события и при получении брони по несуществующему ID, а также `NoAvailableSeatsException` при исчерпании мест (последовательно и в конкурентных сценариях).
 
 **Примеры из `EventServiceIntegrationTests`** (`Get_WithInvalidId_...` — в `EventServiceCrudTests.cs`, `GetAll_WithPageZero_...` — в `EventServicePaginationTests.cs`):

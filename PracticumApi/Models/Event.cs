@@ -61,13 +61,20 @@ public class Event
 
     /// <summary>
     /// Вычисляет AvailableSeats для нового totalSeats так, чтобы число уже занятых мест
-    /// (TotalSeats - AvailableSeats) сохранилось, а результат остался в границах
-    /// [0, totalSeats] — иначе смена вместимости могла бы нарушить инвариант
-    /// AvailableSeats &lt;= TotalSeats или "забыть" освободившиеся места.
+    /// (TotalSeats - AvailableSeats) сохранилось. Бросает ValidationException, если
+    /// totalSeats меньше уже занятых мест — иначе уменьшение вместимости молча оставило
+    /// бы лишние Pending-брони, которые фоновый сервис потом подтвердил бы поверх лимита.
     /// </summary>
     public int RecalculateAvailableSeats(int totalSeats)
     {
         var takenSeats = TotalSeats - AvailableSeats;
-        return Math.Clamp(totalSeats - takenSeats, 0, totalSeats);
+        if (totalSeats < takenSeats)
+        {
+            throw new ValidationException(
+                nameof(TotalSeats),
+                $"Нельзя уменьшить количество мест ниже уже забронированных ({takenSeats}).");
+        }
+
+        return totalSeats - takenSeats;
     }
 }
