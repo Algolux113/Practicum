@@ -24,7 +24,7 @@ public class BookingProcessingService(
     /// <summary>
     /// Искусственная задержка, имитирующая обращение к внешней системе.
     /// </summary>
-    private static readonly TimeSpan ExternalSystemDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ProcessingDelay = TimeSpan.FromSeconds(2);
 
     // Параллельные задачи обрабатывают разные брони одновременно, но запись в хранилище
     // сериализуем через семафор: BookingService.Update и так потокобезопасен изнутри,
@@ -94,9 +94,16 @@ public class BookingProcessingService(
         Booking booking,
         CancellationToken cancellationToken)
     {
+        // По этому логу видно, что брони стартуют одновременно, а не по очереди.
+        _logger.LogInformation(
+            "Начата обработка брони {BookingId} (событие {EventId}, поток {ThreadId}).",
+            booking.Id,
+            booking.EventId,
+            Environment.CurrentManagedThreadId);
+
         // Имитация обращения к внешней системе выполняется до захвата семафора,
         // чтобы задержки для разных броней не блокировали друг друга.
-        await Task.Delay(ExternalSystemDelay, cancellationToken);
+        await Task.Delay(ProcessingDelay, cancellationToken);
 
         await _writeSemaphore.WaitAsync(cancellationToken);
         try

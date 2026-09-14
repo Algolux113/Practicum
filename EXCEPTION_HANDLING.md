@@ -84,10 +84,8 @@ public Booking Get(Guid id)
 ```csharp
 public Task<Booking> CreateBookingAsync(Guid eventId)
 {
-    // Атомарно проверяет событие и резервирует место:
-    // NotFoundException, если события нет, NoAvailableSeatsException — если мест не осталось.
-    _eventService.ReserveSeats(eventId);
-
+    // Объект брони не трогает общее состояние, поэтому собирается до входа в lock —
+    // критическая секция ниже держит замок минимально необходимое время.
     var booking = new Booking
     {
         Id = Guid.NewGuid(),
@@ -96,8 +94,14 @@ public Task<Booking> CreateBookingAsync(Guid eventId)
         CreatedAt = DateTime.UtcNow,
     };
 
+    // Резерв места и добавление брони — атомарная пара под одним замком, иначе
+    // между ними мог бы вклиниться другой вызов CreateBookingAsync.
+    // NotFoundException — если события нет, NoAvailableSeatsException — если мест не осталось.
     lock (_sync)
+    {
+        _eventService.ReserveSeats(eventId);
         _bookings.Add(booking);
+    }
 
     return Task.FromResult(booking);
 }

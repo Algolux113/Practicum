@@ -152,6 +152,26 @@ public class BookingServiceIntegrationTests
     }
 
     /// <summary>
+    /// Тест: AvailableSeats корректно уменьшается на 1 после каждой успешной брони подряд
+    /// (не только в итоге, а на каждом шаге)
+    /// </summary>
+    [Fact]
+    public async Task CreateBookingAsync_ShouldDecrementAvailableSeatsAfterEachBooking()
+    {
+        // Arrange
+        const int totalSeats = 3;
+        var (bookingService, eventService) = CreateServices();
+        var eventId = CreateTestEvent(eventService, totalSeats);
+
+        // Act & Assert
+        for (var expectedAvailableSeats = totalSeats - 1; expectedAvailableSeats >= 0; expectedAvailableSeats--)
+        {
+            await bookingService.CreateBookingAsync(eventId);
+            Assert.Equal(expectedAvailableSeats, eventService.Get(eventId).AvailableSeats);
+        }
+    }
+
+    /// <summary>
     /// Тест: создание броней до лимита вместимости — все успешны, у каждой уникальный Id,
     /// свободных мест не остаётся
     /// </summary>
@@ -259,7 +279,8 @@ public class BookingServiceIntegrationTests
 
     /// <summary>
     /// Тест: при 20 конкурентных запросах на событие с 5 местами успешными должны стать
-    /// ровно 5 броней, остальные 15 — NoAvailableSeatsException, AvailableSeats = 0
+    /// ровно 5 броней с уникальными Id, остальные 15 — NoAvailableSeatsException,
+    /// AvailableSeats = 0
     /// </summary>
     [Fact]
     public async Task CreateBookingAsync_ConcurrentRequestsExceedingCapacity_ShouldPreventOverbooking()
@@ -276,8 +297,10 @@ public class BookingServiceIntegrationTests
                 .Select(_ => TryCreateBookingAsync(bookingService, eventId)));
 
         // Assert
-        Assert.Equal(totalSeats, results.Count(success => success));
-        Assert.Equal(concurrentRequests - totalSeats, results.Count(success => !success));
+        var successfulBookings = results.Where(booking => booking is not null).ToList();
+        Assert.Equal(totalSeats, successfulBookings.Count);
+        Assert.Equal(totalSeats, successfulBookings.Select(b => b!.Id).Distinct().Count());
+        Assert.Equal(concurrentRequests - totalSeats, results.Count(booking => booking is null));
         Assert.Equal(0, eventService.Get(eventId).AvailableSeats);
     }
 
@@ -305,20 +328,19 @@ public class BookingServiceIntegrationTests
     }
 
     /// <summary>
-    /// Запускает CreateBookingAsync на пуле потоков и возвращает true при успехе,
-    /// false — если брошено NoAvailableSeatsException
+    /// Запускает CreateBookingAsync на пуле потоков и возвращает созданную бронь при успехе,
+    /// null — если брошено NoAvailableSeatsException
     /// </summary>
-    private static Task<bool> TryCreateBookingAsync(IBookingService bookingService, Guid eventId) =>
+    private static Task<Booking?> TryCreateBookingAsync(IBookingService bookingService, Guid eventId) =>
         Task.Run(async () =>
         {
             try
             {
-                await bookingService.CreateBookingAsync(eventId);
-                return true;
+                return await bookingService.CreateBookingAsync(eventId);
             }
             catch (NoAvailableSeatsException)
             {
-                return false;
+                return (Booking?)null;
             }
         });
 
