@@ -5,8 +5,10 @@ namespace PracticumApi.Models;
 public class EventDTO : IValidatableObject
 {
     [Required(ErrorMessage = "Поле \"Title\" обязательно.")]
+    [MaxLength(200, ErrorMessage = "Название не должно превышать 200 символов.")]
     public string? Title { get; set; }
 
+    [MaxLength(2000, ErrorMessage = "Описание не должно превышать 2000 символов.")]
     public string? Description { get; set; }
 
     [Required(ErrorMessage = "Поле \"StartAt\" обязательно.")]
@@ -21,7 +23,8 @@ public class EventDTO : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (EndAt <= StartAt)
+        if (StartAt.HasValue && EndAt.HasValue &&
+            UtcDateTime.Normalize(EndAt.Value) <= UtcDateTime.Normalize(StartAt.Value))
         {
             yield return new ValidationResult(
                 "Дата окончания должна быть больше даты начала.",
