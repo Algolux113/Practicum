@@ -13,27 +13,27 @@ public class EventController(IEventService eventService) : ControllerBase
     [HttpGet]
     [ProducesResponseType(typeof(PaginatedResult<Event>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public ActionResult<PaginatedResult<Event>> GetAll(
+    public async Task<ActionResult<PaginatedResult<Event>>> GetAll(
         [FromQuery] string? title = null,
         [FromQuery] DateTime? from = null,
         [FromQuery] DateTime? to = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10
-    ) => _eventService.GetAll(title, from, to, page, pageSize);
+    ) => await _eventService.GetAllAsync(title, from, to, page, pageSize, HttpContext.RequestAborted);
 
     [HttpGet("{id:guid}")]
     [ProducesResponseType(typeof(Event), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public ActionResult<Event> Get(Guid id)
+    public async Task<ActionResult<Event>> Get(Guid id)
     {
-        var eventItem = _eventService.Get(id);
+        var eventItem = await _eventService.GetAsync(id, HttpContext.RequestAborted);
         return eventItem;
     }
 
     [HttpPost]
     [ProducesResponseType(typeof(Event), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public IActionResult Create(EventDTO eventDTO)
+    public async Task<IActionResult> Create(EventDTO eventDTO)
     {
         // StartAt/EndAt/TotalSeats гарантированно заданы: [Required] + IValidatableObject уже отработали.
         var eventItem = Event.Create(
@@ -43,7 +43,7 @@ public class EventController(IEventService eventService) : ControllerBase
             eventDTO.EndAt!.Value,
             eventDTO.TotalSeats!.Value);
 
-        _eventService.Add(eventItem);
+        await _eventService.AddAsync(eventItem, HttpContext.RequestAborted);
         return CreatedAtAction(nameof(Get), new { id = eventItem.Id }, eventItem);
     }
 
@@ -51,28 +51,19 @@ public class EventController(IEventService eventService) : ControllerBase
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public IActionResult Update(Guid id, EventDTO eventDTO)
+    public async Task<IActionResult> Update(Guid id, EventDTO eventDTO)
     {
-        // Проверяем существование события; отсутствие — это 404.
-        var existingEvent = _eventService.Get(id);
-
-        // Собираем новый объект и отдаём его сервису целиком, не мутируя хранимую сущность
-        // напрямую: так контракт Update (найти и заменить) остаётся честным.
-        // AvailableSeats пересчитывается относительно нового TotalSeats, а не переносится
-        // как есть — иначе смена вместимости могла бы нарушить инвариант
-        // AvailableSeats <= TotalSeats (или "потерять" вновь добавленные места).
-        var updatedEvent = new Event
+        // Сервис проверит существование и пересчитает места по актуальному состоянию БД.
+        var updatedEvent = new Event(eventDTO.Title)
         {
             Id = id,
-            Title = eventDTO.Title,
             Description = eventDTO.Description,
             StartAt = eventDTO.StartAt!.Value,
             EndAt = eventDTO.EndAt!.Value,
             TotalSeats = eventDTO.TotalSeats!.Value,
-            AvailableSeats = existingEvent.RecalculateAvailableSeats(eventDTO.TotalSeats!.Value),
         };
 
-        _eventService.Update(updatedEvent);
+        await _eventService.UpdateAsync(updatedEvent, HttpContext.RequestAborted);
 
         return NoContent();
     }
@@ -80,9 +71,9 @@ public class EventController(IEventService eventService) : ControllerBase
     [HttpDelete("{id:guid}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public IActionResult Delete(Guid id)
+    public async Task<IActionResult> Delete(Guid id)
     {
-        _eventService.Delete(id);
+        await _eventService.DeleteAsync(id, HttpContext.RequestAborted);
         return NoContent();
     }
 }

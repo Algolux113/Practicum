@@ -10,16 +10,16 @@ public partial class EventServiceIntegrationTests
     /// Тест получения всех событий
     /// </summary>
     [Fact]
-    public void GetAll_NoFilters_ShouldReturnAllEvents()
+    public async Task GetAll_NoFilters_ShouldReturnAllEvents()
     {
         // Arrange
         var eventService = CreateEventService();
-        eventService.Add(new Event { Title = "Event 1", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
-        eventService.Add(new Event { Title = "Event 2", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
-        eventService.Add(new Event { Title = "Event 3", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 1") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 2") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 3") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
         // Act
-        var result = eventService.GetAll();
+        var result = (await eventService.GetAllAsync());
 
         // Assert
         Assert.Equal(3, result.Items.Count);
@@ -32,16 +32,16 @@ public partial class EventServiceIntegrationTests
     /// Тест фильтрации событий по названию (фильтр срабатывает при частичном совпадении)
     /// </summary>
     [Fact]
-    public void GetAll_FilterByTitle_ShouldReturnMatchingEvents()
+    public async Task GetAll_FilterByTitle_ShouldReturnMatchingEvents()
     {
         // Arrange
         var eventService = CreateEventService();
-        eventService.Add(new Event { Title = "Conference 2024", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
-        eventService.Add(new Event { Title = "Workshop on .NET", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
-        eventService.Add(new Event { Title = "Conference 2025", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Conference 2024") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Workshop on .NET") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Conference 2025") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
         // Act
-        var result = eventService.GetAll(title: "Conference");
+        var result = (await eventService.GetAllAsync(title: "Conference"));
 
         // Assert
         Assert.Equal(2, result.Items.Count);
@@ -53,7 +53,7 @@ public partial class EventServiceIntegrationTests
     /// Тест фильтрации по дате начала (from)
     /// </summary>
     [Fact]
-    public void GetAll_FilterByStartDate_ShouldReturnEventsAfterDate()
+    public async Task GetAll_FilterByStartDate_ShouldReturnEventsAfterDate()
     {
         // Arrange
         var eventService = CreateEventService();
@@ -61,12 +61,12 @@ public partial class EventServiceIntegrationTests
         var date2 = new DateTime(2024, 6, 15, 10, 00, 00);
         var date3 = new DateTime(2024, 12, 31, 10, 00, 00);
 
-        eventService.Add(new Event { Title = "Event 1", StartAt = date1, EndAt = date1.AddHours(1) });
-        eventService.Add(new Event { Title = "Event 2", StartAt = date2, EndAt = date2.AddHours(1) });
-        eventService.Add(new Event { Title = "Event 3", StartAt = date3, EndAt = date3.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 1") { StartAt = date1, EndAt = date1.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 2") { StartAt = date2, EndAt = date2.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 3") { StartAt = date3, EndAt = date3.AddHours(1) });
 
         // Act
-        var result = eventService.GetAll(from: new DateTime(2024, 6, 1));
+        var result = (await eventService.GetAllAsync(from: new DateTime(2024, 6, 1)));
 
         // Assert
         Assert.Equal(2, result.Items.Count);
@@ -77,7 +77,7 @@ public partial class EventServiceIntegrationTests
     /// Тест фильтрации по дате окончания (to)
     /// </summary>
     [Fact]
-    public void GetAll_FilterByEndDate_ShouldReturnEventsBeforeDate()
+    public async Task GetAll_FilterByEndDate_ShouldReturnEventsBeforeDate()
     {
         // Arrange
         var eventService = CreateEventService();
@@ -85,12 +85,12 @@ public partial class EventServiceIntegrationTests
         var date2 = new DateTime(2024, 6, 15, 10, 00, 00);
         var date3 = new DateTime(2024, 12, 31, 10, 00, 00);
 
-        eventService.Add(new Event { Title = "Event 1", StartAt = date1, EndAt = date1.AddHours(1) });
-        eventService.Add(new Event { Title = "Event 2", StartAt = date2, EndAt = date2.AddHours(1) });
-        eventService.Add(new Event { Title = "Event 3", StartAt = date3, EndAt = date3.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 1") { StartAt = date1, EndAt = date1.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 2") { StartAt = date2, EndAt = date2.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 3") { StartAt = date3, EndAt = date3.AddHours(1) });
 
         // Act
-        var result = eventService.GetAll(to: new DateTime(2024, 6, 30));
+        var result = (await eventService.GetAllAsync(to: new DateTime(2024, 6, 30)));
 
         // Assert
         Assert.Equal(2, result.Items.Count);
@@ -101,38 +101,36 @@ public partial class EventServiceIntegrationTests
     /// Тест комбинированной фильтрации (название + даты + пагинация)
     /// </summary>
     [Fact]
-    public void GetAll_CombinedFilters_ShouldReturnFilteredAndPaginatedResults()
+    public async Task GetAll_CombinedFilters_ShouldReturnFilteredAndPaginatedResults()
     {
         // Arrange
         var eventService = CreateEventService();
         var baseDate = new DateTime(2024, 1, 1);
         for (int i = 0; i < 5; i++)
         {
-            eventService.Add(new Event
+            await eventService.AddAsync(new Event("Conference")
             {
-                Title = "Conference",
                 StartAt = baseDate.AddMonths(i),
                 EndAt = baseDate.AddMonths(i).AddDays(1)
             });
         }
         for (int i = 0; i < 3; i++)
         {
-            eventService.Add(new Event
+            await eventService.AddAsync(new Event("Workshop")
             {
-                Title = "Workshop",
                 StartAt = baseDate.AddMonths(i + 6),
                 EndAt = baseDate.AddMonths(i + 6).AddDays(1)
             });
         }
 
         // Act
-        var result = eventService.GetAll(
+        var result = (await eventService.GetAllAsync(
             title: "Conference",
             from: new DateTime(2024, 2, 1),
             to: new DateTime(2024, 5, 1),
             page: 1,
             pageSize: 5
-        );
+        ));
 
         // Assert
         Assert.True(result.Items.Count > 0);
@@ -149,15 +147,15 @@ public partial class EventServiceIntegrationTests
     /// Тест, что фильтр по названию не находит события, если названия не совпадают
     /// </summary>
     [Fact]
-    public void GetAll_FilterByTitle_ShouldReturnEmptyIfNoMatch()
+    public async Task GetAll_FilterByTitle_ShouldReturnEmptyIfNoMatch()
     {
         // Arrange
         var eventService = CreateEventService();
-        eventService.Add(new Event { Title = "Conference", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
-        eventService.Add(new Event { Title = "Workshop", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Conference") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Workshop") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
         // Act
-        var result = eventService.GetAll(title: "Webinar");
+        var result = (await eventService.GetAllAsync(title: "Webinar"));
 
         // Assert
         Assert.Empty(result.Items);
@@ -168,15 +166,15 @@ public partial class EventServiceIntegrationTests
     /// Тест, что фильтр по датам не находит события вне диапазона
     /// </summary>
     [Fact]
-    public void GetAll_FilterByDateRange_ShouldReturnEmptyIfOutOfRange()
+    public async Task GetAll_FilterByDateRange_ShouldReturnEmptyIfOutOfRange()
     {
         // Arrange
         var eventService = CreateEventService();
-        eventService.Add(new Event { Title = "Event 1", StartAt = new DateTime(2024, 1, 1), EndAt = new DateTime(2024, 1, 2) });
-        eventService.Add(new Event { Title = "Event 2", StartAt = new DateTime(2024, 2, 1), EndAt = new DateTime(2024, 2, 2) });
+        await eventService.AddAsync(new Event("Event 1") { StartAt = new DateTime(2024, 1, 1), EndAt = new DateTime(2024, 1, 2) });
+        await eventService.AddAsync(new Event("Event 2") { StartAt = new DateTime(2024, 2, 1), EndAt = new DateTime(2024, 2, 2) });
 
         // Act
-        var result = eventService.GetAll(from: new DateTime(2024, 6, 1), to: new DateTime(2024, 12, 31));
+        var result = (await eventService.GetAllAsync(from: new DateTime(2024, 6, 1), to: new DateTime(2024, 12, 31)));
 
         // Assert
         Assert.Empty(result.Items);

@@ -1,170 +1,145 @@
+using Microsoft.EntityFrameworkCore;
+using PracticumApi.DataAccess;
 using PracticumApi.Interfaces;
 using PracticumApi.Models;
 using PracticumApi.Exceptions;
 
 namespace PracticumApi.Services;
 
-public class EventService() : IEventService, IDisposable
+public class EventService(AppDbContext context) : IEventService
 {
-    private readonly List<Event> _events = [];
+    private readonly AppDbContext _context = context;
 
-    // Сервис — singleton, к нему обращаются запросы и фоновый сервис из разных потоков.
-    // ReaderWriterLockSlim вместо обычного lock: чтения (GetAll/Get) не блокируют друг
-    // друга, эксклюзивным остаётся только доступ на запись (Add/Update/Delete/Reserve/Release).
-    private readonly ReaderWriterLockSlim _sync = new();
-
-    public PaginatedResult<Event> GetAll(
-        string? title = null,
-        DateTime? from = null,
-        DateTime? to = null,
-        int page = 1,
-        int pageSize = 10)
+    public async Task<PaginatedResult<Event>> GetAllAsync(
+        string? title = null, DateTime? from = null, DateTime? to = null,
+        int page = 1, int pageSize = 10, CancellationToken cancellationToken = default)
     {
-        // Валидация параметров пагинации
         if (page < 1)
             throw new ValidationException(nameof(page), "Номер страницы должен быть больше или равен 1");
-
         if (pageSize < 1)
             throw new ValidationException(nameof(pageSize), "Размер страницы должен быть больше или равен 1");
-
         if (pageSize > 100)
             throw new ValidationException(nameof(pageSize), "Размер страницы не может превышать 100");
 
-        List<Event> filtered;
-        _sync.EnterReadLock();
-        try
+        var offset = ((long)page - 1) * pageSize;
+        if (offset > int.MaxValue)
+            throw new ValidationException(nameof(page), "Номер страницы слишком велик.");
+
+        from = from.HasValue ? UtcDateTime.Normalize(from.Value) : null;
+        to = to.HasValue ? UtcDateTime.Normalize(to.Value) : null;
+        var query = _context.Events.AsNoTracking().Where(e => !e.IsDeleted);
+        if (!string.IsNullOrWhiteSpace(title))
         {
-            IEnumerable<Event> query = _events;
-
-            if (!string.IsNullOrWhiteSpace(title))
-                query = query.Where(x => !string.IsNullOrWhiteSpace(x.Title) && x.Title.Contains(title, StringComparison.OrdinalIgnoreCase));
-
-            if (from.HasValue)
-                query = query.Where(x => x.StartAt >= from.Value);
-
-            if (to.HasValue)
-                query = query.Where(x => x.EndAt <= to.Value);
-
-            // Материализуем отфильтрованный набор один раз: иначе фильтры и подсчёт
-            // выполнялись бы дважды и могли бы разойтись между собой.
-            filtered = query.ToList();
+            var search = title.ToLower();
+            query = query.Where(e => e.Title != null && e.Title.ToLower().Contains(search));
         }
-        finally
-        {
-            _sync.ExitReadLock();
-        }
+        if (from.HasValue)
+            query = query.Where(e => e.StartAt >= from.Value);
+        if (to.HasValue)
+            query = query.Where(e => e.EndAt <= to.Value);
 
-        var items = filtered.Skip((page - 1) * pageSize).Take(pageSize).ToList();
-
-        return new PaginatedResult<Event>(items, filtered.Count, page, pageSize);
+        var totalCount = await query.CountAsync(cancellationToken);
+        var items = await query.OrderBy(e => e.StartAt).ThenBy(e => e.Id)
+            .Skip((int)offset).Take(pageSize).ToListAsync(cancellationToken);
+        return new PaginatedResult<Event>(items, totalCount, page, pageSize);
     }
 
-    public Event Get(Guid id)
-    {
-        _sync.EnterReadLock();
-        try
-        {
-            var eventItem = _events.FirstOrDefault(x => x.Id == id);
-            if (eventItem is null)
-                throw new NotFoundException("Event", id);
+    public async Task<Event> GetAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await _context.Events.AsNoTracking().SingleOrDefaultAsync(e => e.Id == id && !e.IsDeleted, cancellationToken)
+        ?? throw new NotFoundException("Event", id);
 
-            return eventItem;
-        }
-        finally
-        {
-            _sync.ExitReadLock();
-        }
-    }
-
-    public void Add(Event eventItem)
+    public async Task AddAsync(Event eventItem, CancellationToken cancellationToken = default)
     {
+        NormalizeDates(eventItem);
         eventItem.Id = Guid.NewGuid();
-        _sync.EnterWriteLock();
+        await _context.Events.AddAsync(eventItem, cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task UpdateAsync(Event eventItem, CancellationToken cancellationToken = default)
+    {
+        NormalizeDates(eventItem);
+        await EventWriteSynchronization.Gate.WaitAsync(cancellationToken);
         try
         {
-            _events.Add(eventItem);
+            var values = _context.Entry(eventItem).CurrentValues.Clone();
+            var totalSeats = eventItem.TotalSeats;
+            var existing = await GetTrackedAsync(eventItem.Id, cancellationToken);
+            // Пересчитываем места по свежим данным внутри той же секции, что и бронирование.
+            var availableSeats = existing.RecalculateAvailableSeats(totalSeats);
+            _context.Entry(existing).CurrentValues.SetValues(values);
+            existing.AvailableSeats = availableSeats;
+            existing.IsDeleted = false;
+            await _context.SaveChangesAsync(cancellationToken);
         }
         finally
         {
-            _sync.ExitWriteLock();
+            EventWriteSynchronization.Gate.Release();
         }
     }
 
-    public void Update(Event eventItem)
+    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        _sync.EnterWriteLock();
+        await EventWriteSynchronization.Gate.WaitAsync(cancellationToken);
         try
         {
-            var index = _events.FindIndex(x => x.Id == eventItem.Id);
-            if (index == -1)
-                throw new NotFoundException("Event", eventItem.Id);
-
-            _events[index] = eventItem;
+            var eventItem = await GetTrackedAsync(id, cancellationToken);
+            eventItem.IsDeleted = true;
+            await _context.SaveChangesAsync(cancellationToken);
         }
         finally
         {
-            _sync.ExitWriteLock();
+            EventWriteSynchronization.Gate.Release();
         }
     }
 
-    public void Delete(Guid id)
+    public async Task ReserveSeatsAsync(Guid id, int count = 1, CancellationToken cancellationToken = default)
     {
-        _sync.EnterWriteLock();
+        await EventWriteSynchronization.Gate.WaitAsync(cancellationToken);
         try
         {
-            var eventItem = _events.FirstOrDefault(x => x.Id == id);
-            if (eventItem is null)
-                throw new NotFoundException("Event", id);
-
-            _events.Remove(eventItem);
-        }
-        finally
-        {
-            _sync.ExitWriteLock();
-        }
-    }
-
-    public void ReserveSeats(Guid id, int count = 1)
-    {
-        // Резерв места мутирует AvailableSeats, поэтому нужен эксклюзивный write-lock:
-        // иначе два читателя могли бы одновременно пройти TryReserveSeats и увести
-        // AvailableSeats в минус.
-        _sync.EnterWriteLock();
-        try
-        {
-            var eventItem = _events.FirstOrDefault(x => x.Id == id);
-            if (eventItem is null)
-                throw new NotFoundException("Event", id);
-
+            var eventItem = await GetTrackedAsync(id, cancellationToken);
             if (!eventItem.TryReserveSeats(count))
                 throw new NoAvailableSeatsException();
+            await _context.SaveChangesAsync(cancellationToken);
         }
         finally
         {
-            _sync.ExitWriteLock();
+            EventWriteSynchronization.Gate.Release();
         }
     }
 
-    public void ReleaseSeats(Guid id, int count = 1)
+    public async Task ReleaseSeatsAsync(Guid id, int count = 1, CancellationToken cancellationToken = default)
     {
-        _sync.EnterWriteLock();
+        await EventWriteSynchronization.Gate.WaitAsync(cancellationToken);
         try
         {
-            var eventItem = _events.FirstOrDefault(x => x.Id == id);
-            if (eventItem is null)
-                throw new NotFoundException("Event", id);
-
+            var eventItem = await GetTrackedAsync(id, cancellationToken);
             eventItem.ReleaseSeats(count);
+            await _context.SaveChangesAsync(cancellationToken);
         }
         finally
         {
-            _sync.ExitWriteLock();
+            EventWriteSynchronization.Gate.Release();
         }
     }
 
-    public void Dispose()
+    private async Task<Event> GetTrackedAsync(Guid id, CancellationToken cancellationToken)
     {
-        _sync.Dispose();
-        GC.SuppressFinalize(this);
+        var current = await GetAsync(id, cancellationToken);
+        var tracked = _context.Events.Local.FirstOrDefault(e => e.Id == id);
+        if (tracked is null)
+        {
+            _context.Events.Attach(current);
+            return current;
+        }
+        _context.Entry(tracked).CurrentValues.SetValues(current);
+        return tracked;
+    }
+
+    private static void NormalizeDates(Event eventItem)
+    {
+        eventItem.StartAt = UtcDateTime.Normalize(eventItem.StartAt);
+        eventItem.EndAt = UtcDateTime.Normalize(eventItem.EndAt);
     }
 }

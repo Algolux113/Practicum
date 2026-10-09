@@ -1,9 +1,17 @@
 using PracticumApi.Exceptions;
+using System.Text.Json.Serialization;
 
 namespace PracticumApi.Models;
 
 public class Event
 {
+    private Event() { }
+
+    public Event(string? title)
+    {
+        Title = title;
+    }
+
     public Guid Id { get; set; }
 
     public string? Title { get; set; }
@@ -17,6 +25,11 @@ public class Event
     public int TotalSeats { get; set; }
 
     public int AvailableSeats { get; set; }
+
+    [JsonIgnore]
+    public bool IsDeleted { get; set; }
+
+    public ICollection<Booking> Bookings { get; set; } = [];
 
     /// <summary>
     /// Создаёт новое событие. AvailableSeats при создании равно totalSeats.

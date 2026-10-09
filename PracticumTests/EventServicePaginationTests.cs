@@ -11,26 +11,25 @@ public partial class EventServiceIntegrationTests
     /// Тест пагинации событий
     /// </summary>
     [Fact]
-    public void GetAll_WithPagination_ShouldReturnCorrectPage()
+    public async Task GetAll_WithPagination_ShouldReturnCorrectPage()
     {
         // Arrange
         var eventService = CreateEventService();
         for (int i = 1; i <= 25; i++)
         {
-            eventService.Add(new Event
+            await eventService.AddAsync(new Event($"Event {i}")
             {
-                Title = $"Event {i}",
                 StartAt = DateTime.Now.AddDays(i),
                 EndAt = DateTime.Now.AddDays(i).AddHours(1)
             });
         }
 
         // Act - первая страница, по 10 элементов
-        var page1 = eventService.GetAll(page: 1, pageSize: 10);
+        var page1 = (await eventService.GetAllAsync(page: 1, pageSize: 10));
         // Вторая страница
-        var page2 = eventService.GetAll(page: 2, pageSize: 10);
+        var page2 = (await eventService.GetAllAsync(page: 2, pageSize: 10));
         // Третья страница
-        var page3 = eventService.GetAll(page: 3, pageSize: 10);
+        var page3 = (await eventService.GetAllAsync(page: 3, pageSize: 10));
 
         // Assert
         Assert.Equal(10, page1.Items.Count);
@@ -48,21 +47,29 @@ public partial class EventServiceIntegrationTests
 
     #region Неуспешные сценарии
 
+    [Fact]
+    public async Task GetAll_WithOverflowingOffset_ShouldThrowValidationException()
+    {
+        var service = CreateEventService();
+        await Assert.ThrowsAsync<ValidationException>(() =>
+            service.GetAllAsync(page: int.MaxValue, pageSize: 100));
+    }
+
     /// <summary>
     /// Тест пагинации с номером страницы больше, чем существует
     /// </summary>
     [Fact]
-    public void GetAll_WithPageNumberTooHigh_ShouldReturnEmptyPage()
+    public async Task GetAll_WithPageNumberTooHigh_ShouldReturnEmptyPage()
     {
         // Arrange
         var eventService = CreateEventService();
         for (int i = 1; i <= 5; i++)
         {
-            eventService.Add(new Event { Title = $"Event {i}", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+            await eventService.AddAsync(new Event($"Event {i}") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
         }
 
         // Act
-        var result = eventService.GetAll(page: 10, pageSize: 5);
+        var result = (await eventService.GetAllAsync(page: 10, pageSize: 5));
 
         // Assert
         Assert.Empty(result.Items);
@@ -74,13 +81,13 @@ public partial class EventServiceIntegrationTests
     /// Тест валидации: page = 0 должен выбросить ValidationException
     /// </summary>
     [Fact]
-    public void GetAll_WithPageZero_ShouldThrowValidationException()
+    public async Task GetAll_WithPageZero_ShouldThrowValidationException()
     {
         // Arrange
         var eventService = CreateEventService();
 
         // Act & Assert
-        var ex = Assert.Throws<ValidationException>(() => eventService.GetAll(page: 0));
+        var ex = await Assert.ThrowsAsync<ValidationException>(async () => await eventService.GetAllAsync(page: 0));
         Assert.Contains("Номер страницы должен быть больше или равен 1", ex.Message);
     }
 
@@ -88,13 +95,13 @@ public partial class EventServiceIntegrationTests
     /// Тест валидации: page < 0 должен выбросить ValidationException
     /// </summary>
     [Fact]
-    public void GetAll_WithNegativePage_ShouldThrowValidationException()
+    public async Task GetAll_WithNegativePage_ShouldThrowValidationException()
     {
         // Arrange
         var eventService = CreateEventService();
 
         // Act & Assert
-        var ex = Assert.Throws<ValidationException>(() => eventService.GetAll(page: -5));
+        var ex = await Assert.ThrowsAsync<ValidationException>(async () => await eventService.GetAllAsync(page: -5));
         Assert.Contains("Номер страницы должен быть больше или равен 1", ex.Message);
     }
 
@@ -102,13 +109,13 @@ public partial class EventServiceIntegrationTests
     /// Тест валидации: pageSize = 0 должен выбросить ValidationException
     /// </summary>
     [Fact]
-    public void GetAll_WithPageSizeZero_ShouldThrowValidationException()
+    public async Task GetAll_WithPageSizeZero_ShouldThrowValidationException()
     {
         // Arrange
         var eventService = CreateEventService();
 
         // Act & Assert
-        var ex = Assert.Throws<ValidationException>(() => eventService.GetAll(pageSize: 0));
+        var ex = await Assert.ThrowsAsync<ValidationException>(async () => await eventService.GetAllAsync(pageSize: 0));
         Assert.Contains("Размер страницы должен быть больше или равен 1", ex.Message);
     }
 
@@ -116,13 +123,13 @@ public partial class EventServiceIntegrationTests
     /// Тест валидации: pageSize > 100 должен выбросить ValidationException
     /// </summary>
     [Fact]
-    public void GetAll_WithPageSizeExceeding100_ShouldThrowValidationException()
+    public async Task GetAll_WithPageSizeExceeding100_ShouldThrowValidationException()
     {
         // Arrange
         var eventService = CreateEventService();
 
         // Act & Assert
-        var ex = Assert.Throws<ValidationException>(() => eventService.GetAll(pageSize: 101));
+        var ex = await Assert.ThrowsAsync<ValidationException>(async () => await eventService.GetAllAsync(pageSize: 101));
         Assert.Contains("Размер страницы не может превышать 100", ex.Message);
     }
 

@@ -26,12 +26,6 @@ public class BookingProcessingService(
     /// </summary>
     private static readonly TimeSpan ProcessingDelay = TimeSpan.FromSeconds(2);
 
-    // Параллельные задачи обрабатывают разные брони одновременно; семафор сериализует
-    // только сам вызов BookingService.Update (он и так потокобезопасен изнутри, но здесь
-    // мы явно гарантируем, что в один момент времени пишет только одна задача). Проверка
-    // события и Confirm()/Reject() — не запись в это хранилище, поэтому семафор их не держит.
-    private readonly SemaphoreSlim _writeSemaphore = new(1, 1);
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Фоновый сервис обработки бронирований запущен.");
@@ -68,11 +62,9 @@ public class BookingProcessingService(
 
     private async Task ProcessPendingBookingsAsync(CancellationToken cancellationToken)
     {
-        using var scope = _scopeFactory.CreateScope();
+        await using var scope = _scopeFactory.CreateAsyncScope();
         var bookingService = scope.ServiceProvider.GetRequiredService<IBookingService>();
-        var eventService = scope.ServiceProvider.GetRequiredService<IEventService>();
-
-        var pendingBookings = bookingService.GetAll()
+        var pendingBookings = (await bookingService.GetAllAsync(cancellationToken))
             .Where(b => b.Status == BookingStatus.Pending)
             .ToList();
 
@@ -84,14 +76,12 @@ public class BookingProcessingService(
         // Каждая бронь обрабатывается независимо, поэтому имитацию обращения к внешней
         // системе запускаем параллельно, а не ждём 2 секунды на каждую бронь по очереди.
         var processingTasks = pendingBookings.Select(booking =>
-            ProcessBookingAsync(bookingService, eventService, booking, cancellationToken));
+            ProcessBookingAsync(booking, cancellationToken));
 
         await Task.WhenAll(processingTasks);
     }
 
     private async Task ProcessBookingAsync(
-        IBookingService bookingService,
-        IEventService eventService,
         Booking booking,
         CancellationToken cancellationToken)
     {
@@ -102,29 +92,17 @@ public class BookingProcessingService(
             booking.EventId,
             Environment.CurrentManagedThreadId);
 
-        // Имитация обращения к внешней системе выполняется до захвата семафора,
-        // чтобы задержки для разных броней не блокировали друг друга.
+        // Задержки для разных броней выполняются параллельно, до обращения к БД.
         await Task.Delay(ProcessingDelay, cancellationToken);
 
+        // DbContext не потокобезопасен: каждой параллельной задаче — собственный scope.
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var bookingService = scope.ServiceProvider.GetRequiredService<IBookingService>();
         try
         {
-            // Событие могли удалить, пока бронь ждала обработки — тогда подтверждать нечего.
-            if (!EventExists(eventService, booking.EventId))
-            {
-                booking.Reject();
-                await UpdateBookingAsync(bookingService, booking, cancellationToken);
-
-                _logger.LogWarning(
-                    "Событие {EventId} для брони {BookingId} не найдено, бронь отклонена.",
-                    booking.EventId,
-                    booking.Id);
-                return;
-            }
-
-            booking.Confirm();
-            await UpdateBookingAsync(bookingService, booking, cancellationToken);
-
-            _logger.LogInformation("Бронь {BookingId} переведена в статус Confirmed.", booking.Id);
+            // Проверка события и переход статуса выполняются по свежим данным под общим семафором.
+            var status = await bookingService.ProcessPendingAsync(booking.Id, cancellationToken);
+            _logger.LogInformation("Бронь {BookingId} обработана: {Status}.", booking.Id, status);
         }
         catch (OperationCanceledException)
         {
@@ -132,67 +110,23 @@ public class BookingProcessingService(
         }
         catch (NotFoundException)
         {
-            // Бронь удалили, пока мы её обрабатывали — это не ошибка,
-            // просто пропускаем и продолжаем с остальными.
-            _logger.LogInformation("Бронь {BookingId} исчезла до завершения обработки, пропускаем.", booking.Id);
+            _logger.LogInformation("Бронь {BookingId} исчезла до завершения обработки.", booking.Id);
         }
         catch (Exception ex)
         {
-            // Неожиданная ошибка при подтверждении: откатываемся — отклоняем бронь
-            // и возвращаем место в событие, чтобы оно не пропало впустую.
             _logger.LogError(ex, "Не удалось обработать бронь {BookingId}, отклоняем и возвращаем место.", booking.Id);
 
-            booking.Reject();
-
+            // После сбоя SaveChanges используем новый контекст, без несохранённых изменений.
+            await using var recoveryScope = _scopeFactory.CreateAsyncScope();
+            var recoveryService = recoveryScope.ServiceProvider.GetRequiredService<IBookingService>();
             try
             {
-                eventService.ReleaseSeats(booking.EventId);
+                await recoveryService.RejectAsync(booking.Id, cancellationToken);
             }
             catch (NotFoundException)
             {
-                // Событие уже удалено — освобождать место некуда.
-            }
-
-            try
-            {
-                await UpdateBookingAsync(bookingService, booking, cancellationToken);
-            }
-            catch (NotFoundException)
-            {
-                // Бронь тоже удалили — сохранять отказ уже некуда.
+                // Бронь удалена — сохранять отказ уже некуда.
             }
         }
-    }
-
-    private static bool EventExists(IEventService eventService, Guid eventId)
-    {
-        try
-        {
-            eventService.Get(eventId);
-            return true;
-        }
-        catch (NotFoundException)
-        {
-            return false;
-        }
-    }
-
-    private async Task UpdateBookingAsync(IBookingService bookingService, Booking booking, CancellationToken cancellationToken)
-    {
-        await _writeSemaphore.WaitAsync(cancellationToken);
-        try
-        {
-            bookingService.Update(booking);
-        }
-        finally
-        {
-            _writeSemaphore.Release();
-        }
-    }
-
-    public override void Dispose()
-    {
-        _writeSemaphore.Dispose();
-        base.Dispose();
     }
 }

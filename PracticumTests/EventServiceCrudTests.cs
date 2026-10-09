@@ -1,5 +1,7 @@
 using PracticumApi.Models;
 using PracticumApi.Exceptions;
+using Microsoft.Extensions.DependencyInjection;
+using PracticumApi.Interfaces;
 
 namespace PracticumTests;
 
@@ -7,25 +9,43 @@ public partial class EventServiceIntegrationTests
 {
     #region Успешные сценарии
 
+    [Fact]
+    public async Task Update_AfterBookingInAnotherContext_ShouldPreserveReservedSeats()
+    {
+        // Arrange
+        var eventService = CreateEventService();
+        var eventItem = Event.Create("Событие", null, DateTime.UtcNow, DateTime.UtcNow.AddHours(1), 3);
+        await eventService.AddAsync(eventItem);
+        using var otherScope = _serviceProvider.CreateScope();
+        var bookingService = otherScope.ServiceProvider.GetRequiredService<IBookingService>();
+        await bookingService.CreateBookingAsync(eventItem.Id);
+
+        // Act
+        eventItem.TotalSeats = 5;
+        await eventService.UpdateAsync(eventItem);
+
+        // Assert
+        Assert.Equal(4, (await eventService.GetAsync(eventItem.Id)).AvailableSeats);
+    }
+
     /// <summary>
     /// Тест успешного создания события
     /// </summary>
     [Fact]
-    public void Add_ValidEvent_ShouldAddEvent()
+    public async Task Add_ValidEvent_ShouldAddEvent()
     {
         // Arrange
         var eventService = CreateEventService();
-        var newEvent = new Event
+        var newEvent = new Event("Conference 2024")
         {
-            Title = "Conference 2024",
             Description = "Annual tech conference",
             StartAt = new DateTime(2024, 6, 15, 09, 00, 00),
             EndAt = new DateTime(2024, 6, 15, 17, 00, 00)
         };
 
         // Act
-        eventService.Add(newEvent);
-        var result = eventService.Get(newEvent.Id);
+        await eventService.AddAsync(newEvent);
+        var result = (await eventService.GetAsync(newEvent.Id));
 
         // Assert
         Assert.NotNull(result);
@@ -38,20 +58,19 @@ public partial class EventServiceIntegrationTests
     /// Тест получения события по ID
     /// </summary>
     [Fact]
-    public void Get_WithValidId_ShouldReturnEvent()
+    public async Task Get_WithValidId_ShouldReturnEvent()
     {
         // Arrange
         var eventService = CreateEventService();
-        var newEvent = new Event
+        var newEvent = new Event("Meeting")
         {
-            Title = "Meeting",
             StartAt = new DateTime(2024, 5, 20, 10, 00, 00),
             EndAt = new DateTime(2024, 5, 20, 11, 00, 00)
         };
-        eventService.Add(newEvent);
+        await eventService.AddAsync(newEvent);
 
         // Act
-        var result = eventService.Get(newEvent.Id);
+        var result = (await eventService.GetAsync(newEvent.Id));
 
         // Assert
         Assert.NotNull(result);
@@ -63,30 +82,28 @@ public partial class EventServiceIntegrationTests
     /// Тест обновления существующего события
     /// </summary>
     [Fact]
-    public void Update_ExistingEvent_ShouldUpdateEvent()
+    public async Task Update_ExistingEvent_ShouldUpdateEvent()
     {
         // Arrange
         var eventService = CreateEventService();
-        var originalEvent = new Event
+        var originalEvent = new Event("Original Event")
         {
-            Title = "Original Event",
             StartAt = new DateTime(2024, 5, 20, 10, 00, 00),
             EndAt = new DateTime(2024, 5, 20, 11, 00, 00)
         };
-        eventService.Add(originalEvent);
+        await eventService.AddAsync(originalEvent);
 
-        var updatedEvent = new Event
+        var updatedEvent = new Event("Updated Event")
         {
             Id = originalEvent.Id,
-            Title = "Updated Event",
             Description = "Updated description",
             StartAt = new DateTime(2024, 5, 21, 14, 00, 00),
             EndAt = new DateTime(2024, 5, 21, 15, 00, 00)
         };
 
         // Act
-        eventService.Update(updatedEvent);
-        var result = eventService.Get(originalEvent.Id);
+        await eventService.UpdateAsync(updatedEvent);
+        var result = (await eventService.GetAsync(originalEvent.Id));
 
         // Assert
         Assert.NotNull(result);
@@ -99,24 +116,23 @@ public partial class EventServiceIntegrationTests
     /// Тест удаления существующего события
     /// </summary>
     [Fact]
-    public void Delete_ExistingEvent_ShouldDeleteEvent()
+    public async Task Delete_ExistingEvent_ShouldDeleteEvent()
     {
         // Arrange
         var eventService = CreateEventService();
-        var newEvent = new Event
+        var newEvent = new Event("Event to Delete")
         {
-            Title = "Event to Delete",
             StartAt = new DateTime(2024, 5, 20, 10, 00, 00),
             EndAt = new DateTime(2024, 5, 20, 11, 00, 00)
         };
-        eventService.Add(newEvent);
-        Assert.NotNull(eventService.Get(newEvent.Id));
+        await eventService.AddAsync(newEvent);
+        Assert.NotNull((await eventService.GetAsync(newEvent.Id)));
 
         // Act
-        eventService.Delete(newEvent.Id);
+        await eventService.DeleteAsync(newEvent.Id);
 
         // Assert - попытка получить удалённое событие должна выбросить исключение
-        Assert.Throws<NotFoundException>(() => eventService.Get(newEvent.Id));
+        await Assert.ThrowsAsync<NotFoundException>(async () => await eventService.GetAsync(newEvent.Id));
     }
 
     /// <summary>
@@ -145,64 +161,63 @@ public partial class EventServiceIntegrationTests
     /// Тест попытки получить событие с несуществующим ID
     /// </summary>
     [Fact]
-    public void Get_WithInvalidId_ShouldThrowNotFoundException()
+    public async Task Get_WithInvalidId_ShouldThrowNotFoundException()
     {
         // Arrange
         var eventService = CreateEventService();
-        eventService.Add(new Event { Title = "Event", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Event") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
         // Act & Assert
-        Assert.Throws<NotFoundException>(() => eventService.Get(Guid.NewGuid()));
+        await Assert.ThrowsAsync<NotFoundException>(async () => await eventService.GetAsync(Guid.NewGuid()));
     }
 
     /// <summary>
     /// Тест попытки получить событие из пустого списка
     /// </summary>
     [Fact]
-    public void Get_FromEmptyList_ShouldThrowNotFoundException()
+    public async Task Get_FromEmptyList_ShouldThrowNotFoundException()
     {
         // Arrange
         var eventService = CreateEventService();
 
         // Act & Assert
-        Assert.Throws<NotFoundException>(() => eventService.Get(Guid.NewGuid()));
+        await Assert.ThrowsAsync<NotFoundException>(async () => await eventService.GetAsync(Guid.NewGuid()));
     }
 
     /// <summary>
     /// Тест попытки обновить событие с несуществующим ID
     /// </summary>
     [Fact]
-    public void Update_WithInvalidId_ShouldThrowNotFoundException()
+    public async Task Update_WithInvalidId_ShouldThrowNotFoundException()
     {
         // Arrange
         var eventService = CreateEventService();
-        var existingEvent = new Event { Title = "Event 1", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) };
-        eventService.Add(existingEvent);
+        var existingEvent = new Event("Event 1") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) };
+        await eventService.AddAsync(existingEvent);
 
-        var nonExistentEvent = new Event
+        var nonExistentEvent = new Event("Non-existent Event")
         {
             Id = Guid.NewGuid(),
-            Title = "Non-existent Event",
             StartAt = DateTime.Now.AddDays(1),
             EndAt = DateTime.Now.AddDays(1).AddHours(1)
         };
 
         // Act & Assert
-        Assert.Throws<NotFoundException>(() => eventService.Update(nonExistentEvent));
+        await Assert.ThrowsAsync<NotFoundException>(async () => await eventService.UpdateAsync(nonExistentEvent));
     }
 
     /// <summary>
     /// Тест попытки удалить событие с несуществующим ID
     /// </summary>
     [Fact]
-    public void Delete_WithInvalidId_ShouldThrowNotFoundException()
+    public async Task Delete_WithInvalidId_ShouldThrowNotFoundException()
     {
         // Arrange
         var eventService = CreateEventService();
-        eventService.Add(new Event { Title = "Event 1", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
+        await eventService.AddAsync(new Event("Event 1") { StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
 
         // Act & Assert
-        Assert.Throws<NotFoundException>(() => eventService.Delete(Guid.NewGuid()));
+        await Assert.ThrowsAsync<NotFoundException>(async () => await eventService.DeleteAsync(Guid.NewGuid()));
     }
 
     /// <summary>
