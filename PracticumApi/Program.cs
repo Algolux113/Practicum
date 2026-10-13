@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PracticumApi.DataAccess;
+using PracticumApi.DataAccess.Repositories;
 using PracticumApi.Interfaces;
 using PracticumApi.Middlewares;
 using PracticumApi.Services;
@@ -11,6 +12,8 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddScoped<IEventRepository, EventRepository>();
+builder.Services.AddScoped<IBookingRepository, BookingRepository>();
 builder.Services.AddScoped<IEventService, EventService>();
 builder.Services.AddScoped<IBookingService, BookingService>();
 
@@ -59,7 +62,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
+    db.Database.Migrate();
 }
 
 app.UseMiddleware<GlobalExceptionHandlingMiddleware>();

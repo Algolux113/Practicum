@@ -4,23 +4,35 @@ namespace PracticumTests;
 
 public partial class EventServiceIntegrationTests
 {
+    /// <summary>
+    /// Тест: добавление и обновление события нормализуют даты в UTC независимо от исходного DateTimeKind
+    /// </summary>
     [Theory]
     [InlineData(DateTimeKind.Unspecified)]
     [InlineData(DateTimeKind.Local)]
     [InlineData(DateTimeKind.Utc)]
     public async Task AddAndUpdate_ShouldNormalizeDatesToUtc(DateTimeKind kind)
     {
+        // Arrange
         var service = CreateEventService();
         var start = DateTime.SpecifyKind(new DateTime(2026, 1, 1, 12, 0, 0), kind);
         var eventItem = Event.Create("Даты", null, start, start.AddHours(1), 5);
+
+        // Act
         await service.AddAsync(eventItem);
         var saved = await service.GetAsync(eventItem.Id);
+
+        // Assert
         Assert.Equal(DateTimeKind.Utc, saved.StartAt.Kind);
         Assert.Equal(UtcDateTime.Normalize(start), saved.StartAt);
+
+        // Act
         saved.StartAt = start.AddDays(1);
         saved.EndAt = start.AddDays(1).AddHours(1);
         await service.UpdateAsync(saved);
         var updated = await service.GetAsync(saved.Id);
+
+        // Assert
         Assert.Equal(DateTimeKind.Utc, updated.StartAt.Kind);
         Assert.Equal(DateTimeKind.Utc, updated.EndAt.Kind);
         Assert.Equal(UtcDateTime.Normalize(start.AddDays(1)), updated.StartAt);

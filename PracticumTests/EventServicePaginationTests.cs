@@ -47,12 +47,20 @@ public partial class EventServiceIntegrationTests
 
     #region Неуспешные сценарии
 
+    /// <summary>
+    /// Тест: переполнение смещения пагинации выбрасывает ValidationException
+    /// </summary>
     [Fact]
     public async Task GetAll_WithOverflowingOffset_ShouldThrowValidationException()
     {
+        // Arrange
         var service = CreateEventService();
-        await Assert.ThrowsAsync<ValidationException>(() =>
-            service.GetAllAsync(page: int.MaxValue, pageSize: 100));
+
+        // Act
+        Func<Task> action = () => service.GetAllAsync(page: int.MaxValue, pageSize: 100);
+
+        // Assert
+        await Assert.ThrowsAsync<ValidationException>(action);
     }
 
     /// <summary>

@@ -4,21 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-All commands run from the repository root (`Practicum.slnx` ties both projects together, so `dotnet` picks them up automatically).
+All commands run from the repository root (`Practicum.slnx` includes the API and both test projects).
 
 - **Build:** `dotnet build`
 - **Run the API:** `dotnet run --launch-profile https --project PracticumApi`
   - HTTPS: `https://localhost:7008`, HTTP: `http://localhost:5267`
   - Swagger UI (Development only): `https://localhost:7008/swagger/`, OpenAPI doc: `/openapi/v1.json`
-- **Run all tests:** `dotnet test`
+- **Run service tests (EF Core InMemory):** `dotnet test PracticumTests`
+- **Run PostgreSQL integration tests:** `dotnet test PracticumIntegrationTests` (requires Docker)
+- **Run all tests:** `dotnet test` (requires Docker for the Testcontainers suite)
 - **Run one test:** `dotnet test --filter "FullyQualifiedName~EventServiceIntegrationTests.Get_WithInvalidId_ShouldThrowNotFoundException"`
 - **Run one test class:** `dotnet test --filter "FullyQualifiedName~BookingServiceIntegrationTests"`
+- **Add a migration:** `dotnet ef migrations add <MigrationName> --project PracticumApi --startup-project PracticumApi`
 
 Target framework is `net10.0` (SDK 10.x). `PracticumApi.http` contains sample requests for editor-based HTTP clients.
 
 ## Architecture
 
-ASP.NET Core Web API (`PracticumApi`) with an xUnit test project (`PracticumTests`). Two domains: **Events** and **Bookings**. There is **no database** — both services keep data in an in-memory `List<T>` and are registered as singletons in [Program.cs](PracticumApi/Program.cs). Data does not survive a restart.
+ASP.NET Core Web API (`PracticumApi`) with PostgreSQL persistence through EF Core. `AppDbContext` maps the `Event` and `Booking` entities to `events` and `bookings`; `bookings.event_id` references `events.id`. The initial migration is in `PracticumApi/Migrations`, and `Program.cs` applies pending migrations with `Migrate()` at startup. The PostgreSQL server and target database must exist before starting the API.
+
+`IEventRepository` and `IBookingRepository` encapsulate EF Core data access. Their implementations live in `PracticumApi/DataAccess/Repositories`; register both as **scoped**. Services own domain behavior and use repositories rather than accessing `AppDbContext`/`DbSet` directly. Both repositories in one request scope share the same scoped context, allowing booking creation and seat reservation to be saved together.
 
 ### Request → service → exception → middleware flow
 
@@ -37,18 +42,19 @@ Controllers are thin and contain no error handling. Business rules live in the s
 
 - [`Event`](PracticumApi/Models/Event.cs) tracks `TotalSeats` and `AvailableSeats`. Events are built via the static factory `Event.Create(...)`, which throws `ValidationException` if `totalSeats <= 0`; `AvailableSeats` starts equal to `TotalSeats`.
 - `Event.TryReserveSeats(count = 1)` / `Event.ReleaseSeats(count = 1)` mutate `AvailableSeats` on the entity itself (the latter clamps to `TotalSeats`). `Event.RecalculateAvailableSeats(newTotalSeats)` is the pure helper `EventController.Update` uses when `TotalSeats` changes: it preserves the number of already-taken seats and throws `ValidationException` (400) if `newTotalSeats` is below that count, so shrinking capacity can't silently leave more `Pending` bookings than the event now has room for (`BookingProcessingService` would otherwise confirm them all and oversell the event).
-- [`IEventService.ReserveSeats`/`ReleaseSeats`](PracticumApi/Interfaces/IEventService.cs) are the **atomic** entry points: [`EventService`](PracticumApi/Services/EventService.cs) does the lookup and the seat mutation under the same `ReaderWriterLockSlim`, so concurrent reservations can't both pass the seat check and oversell the event. `ReserveSeats` throws `NotFoundException` if the event is missing and `NoAvailableSeatsException` if `count > AvailableSeats`. `EventService` uses `ReaderWriterLockSlim` rather than a plain lock so `GetAll`/`Get` (reads) don't block each other — only `Add`/`Update`/`Delete`/`ReserveSeats`/`ReleaseSeats` (writes) take the exclusive write lock; it implements `IDisposable` to dispose the lock.
+- `Event.TryReserveSeats` / `ReleaseSeats` mutate seat counts on the entity; `Event.RecalculateAvailableSeats(newTotalSeats)` preserves taken seats and rejects capacity below the occupied count.
+- [`EventWriteSynchronization`](PracticumApi/Services/EventWriteSynchronization.cs) provides a process-wide semaphore for coordinated event/booking writes across scopes. This protects concurrent requests in one API process; it is not a distributed lock across multiple API instances.
 
 ### Bookings and background processing
 
 - A booking is created via **`POST /events/{id}/book`**, handled by [`BookingController`](PracticumApi/Controllers/BookingController.cs) (via an absolute `[HttpPost("/events/{id:guid}/book")]` route, so the URL stays under `/events`), *not* on `EventController`. `BookingController` also exposes `GET /bookings/{id}`.
 - Every action in `BookingController` and [`EventController`](PracticumApi/Controllers/EventController.cs) carries `[ProducesResponseType]` for each status code it can actually return (success + the domain exceptions it can throw, e.g. `Book` documents 202/404/409). The built-in `Microsoft.AspNetCore.OpenApi` generator has no way to know about responses thrown from `GlobalExceptionHandlingMiddleware` or returned via a non-default helper like `Accepted(...)`/`NoContent()`, so without the explicit attribute a status code silently won't show up in `/openapi/v1.json` / Swagger UI (and a wrong default like "200 OK" can appear even where the real code is 202/201/204). Keep this in sync when adding a new action or a new exception path.
-- [`BookingService.CreateBookingAsync`](PracticumApi/Services/BookingService.cs) builds the `Booking` object first (no shared state touched), then enters a `lock (_sync)` that atomically calls `IEventService.ReserveSeats(eventId)` (404 if the event is missing, 409 `NoAvailableSeatsException` if no seats left) and adds the booking to storage — kept as one critical section so no other `CreateBookingAsync` call can interleave between the seat check and the booking being recorded, while keeping the lock scope minimal (no unrelated work inside it). New bookings start as `Pending` (see [`BookingStatus`](PracticumApi/Models/BookingStatus.cs)). [`Booking.Confirm()`/`Booking.Reject()`](PracticumApi/Models/Booking.cs) set `Status` and `ProcessedAt`.
-- [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs) is a `BackgroundService` (registered with `AddHostedService`). Every `PollingInterval` (**5 seconds**) it scans for `Pending` bookings and processes them **concurrently** (`Task.WhenAll`); each logs an `Information` line as soon as it starts (so the log visibly shows several bookings starting together, not one after another) and then waits `ProcessingDelay` (**2 seconds**) to simulate an external system before writing. A `SemaphoreSlim(1, 1)` serializes only the actual `IBookingService.Update` call (via the `UpdateBookingAsync` helper) — the event-existence check and `Confirm`/`Reject` run outside it, since they don't touch the bookings list. Per booking: if the event no longer exists, the booking is rejected and a `Warning` is logged; otherwise it's confirmed; any other exception rejects the booking, releases its seat via `IEventService.ReleaseSeats`, and logs an `Error`. It creates its own DI scope via `IServiceScopeFactory`, honors `OperationCanceledException`, and never lets an unexpected exception kill the loop.
+- [`BookingService.CreateBookingAsync`](PracticumApi/Services/BookingService.cs) loads the tracked event through `IEventRepository`, reserves a seat, adds the booking through `IBookingRepository`, and saves both changes once using their shared scoped `AppDbContext`. New bookings start as `Pending`; `Booking.Confirm()` / `Booking.Reject()` set `Status` and `ProcessedAt`.
+- [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs) is a `BackgroundService`. It uses `IServiceScopeFactory` to get `IBookingRepository` for each poll and a separate scoped `IBookingService` for each booking processed concurrently. On failure, recovery uses another fresh scope and rejects the booking, returning the seat. The loop honors cancellation and logs unexpected errors without stopping.
 
 ### Tests
 
-Integration tests in `PracticumTests` use **real service instances, no mocks** (despite `Moq` being referenced). `BookingService` takes `IEventService` in its constructor, so booking tests construct both services together. Tests follow Arrange/Act/Assert and are split with `#region Успешные сценарии` / `#region Неуспешные сценарии` (and, in `BookingServiceIntegrationTests`, a third `#region Конкурентность` for seat-overbooking races).
+`PracticumTests` checks services using EF Core InMemory and isolated DI registrations. `PracticumIntegrationTests` uses Testcontainers PostgreSQL 16 (Docker required) to verify migrations and every repository method. Both follow Arrange/Act/Assert. Service tests are grouped by behavior; repository tests are in `EventRepositoryIntegrationTests` and `BookingRepositoryIntegrationTests`, and migration checks are in `MigrationIntegrationTests`.
 
 `EventServiceIntegrationTests` is one `partial class` spread across several files, grouped by behavior under test — add a new `EventService` test to the file that matches its concern:
 

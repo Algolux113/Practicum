@@ -1,5 +1,3 @@
-using Microsoft.EntityFrameworkCore;
-using PracticumApi.DataAccess;
 using PracticumApi.Exceptions;
 using PracticumApi.Interfaces;
 using PracticumApi.Models;
@@ -9,15 +7,18 @@ namespace PracticumApi.Services;
 /// <summary>
 /// Сервис бронирований с сохранением брони и резерва места в одном контексте.
 /// </summary>
-public class BookingService(AppDbContext context) : IBookingService
+public class BookingService(
+    IBookingRepository bookingRepository,
+    IEventRepository eventRepository) : IBookingService
 {
-    private readonly AppDbContext _context = context;
+    private readonly IBookingRepository _bookingRepository = bookingRepository;
+    private readonly IEventRepository _eventRepository = eventRepository;
 
-    public async Task<List<Booking>> GetAllAsync(CancellationToken cancellationToken = default) =>
-        await _context.Bookings.AsNoTracking().ToListAsync(cancellationToken);
+    public Task<List<Booking>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        _bookingRepository.GetAllAsync(cancellationToken);
 
     public async Task<Booking> GetAsync(Guid id, CancellationToken cancellationToken = default) =>
-        await _context.Bookings.AsNoTracking().SingleOrDefaultAsync(b => b.Id == id, cancellationToken)
+        await _bookingRepository.GetAsync(id, cancellationToken)
         ?? throw new NotFoundException("Booking", id);
 
     public async Task<Booking> CreateBookingAsync(Guid eventId, CancellationToken cancellationToken = default)
@@ -30,39 +31,27 @@ public class BookingService(AppDbContext context) : IBookingService
         };
 
         await EventWriteSynchronization.Gate.WaitAsync(cancellationToken);
+        Event? eventItem = null;
         try
         {
-            // Читаем актуальный остаток после входа в секцию, даже если событие уже отслеживается.
-            var current = await _context.Events.AsNoTracking()
-                .SingleOrDefaultAsync(e => e.Id == eventId && !e.IsDeleted, cancellationToken)
+            eventItem = await _eventRepository.GetTrackedAsync(eventId, cancellationToken: cancellationToken)
                 ?? throw new NotFoundException("Event", eventId);
-            var eventItem = _context.Events.Local.FirstOrDefault(e => e.Id == eventId);
-            if (eventItem is null)
-            {
-                eventItem = current;
-                _context.Events.Attach(eventItem);
-            }
-            else
-            {
-                _context.Entry(eventItem).CurrentValues.SetValues(current);
-            }
 
             if (!eventItem.TryReserveSeats())
                 throw new NoAvailableSeatsException();
 
-            try
-            {
-                await _context.Bookings.AddAsync(booking, cancellationToken);
-                // EF Core сохраняет бронь и изменение события одной транзакцией.
-                await _context.SaveChangesAsync(cancellationToken);
-            }
-            catch
-            {
-                _context.Entry(booking).State = EntityState.Detached;
-                _context.Entry(eventItem).State = EntityState.Detached;
-                throw;
-            }
+            await _bookingRepository.AddAsync(booking, cancellationToken);
+            // Оба репозитория используют один scoped AppDbContext, поэтому место и бронь
+            // сохраняются одной транзакцией.
+            await _bookingRepository.SaveChangesAsync(cancellationToken);
             return booking;
+        }
+        catch
+        {
+            _bookingRepository.Detach(booking);
+            if (eventItem is not null)
+                _eventRepository.Detach(eventItem);
+            throw;
         }
         finally
         {
@@ -72,16 +61,23 @@ public class BookingService(AppDbContext context) : IBookingService
 
     public async Task UpdateAsync(Booking booking, CancellationToken cancellationToken = default)
     {
+        var eventId = booking.EventId;
+        var status = booking.Status;
+        var createdAt = booking.CreatedAt;
+        var processedAt = booking.ProcessedAt;
         var existing = await GetTrackedAsync(booking.Id, cancellationToken);
-        _context.Entry(existing).CurrentValues.SetValues(booking);
-        await _context.SaveChangesAsync(cancellationToken);
+        existing.EventId = eventId;
+        existing.Status = status;
+        existing.CreatedAt = createdAt;
+        existing.ProcessedAt = processedAt;
+        await _bookingRepository.SaveChangesAsync(cancellationToken);
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var existing = await GetTrackedAsync(id, cancellationToken);
-        _context.Bookings.Remove(existing);
-        await _context.SaveChangesAsync(cancellationToken);
+        _bookingRepository.Delete(existing);
+        await _bookingRepository.SaveChangesAsync(cancellationToken);
     }
 
     public Task<BookingStatus> ProcessPendingAsync(Guid id, CancellationToken cancellationToken = default) =>
@@ -97,38 +93,15 @@ public class BookingService(AppDbContext context) : IBookingService
         Event? eventItem = null;
         try
         {
-            var current = await GetAsync(id, cancellationToken);
-            booking = _context.Bookings.Local.FirstOrDefault(b => b.Id == id);
-            if (booking is null)
-            {
-                booking = current;
-                _context.Bookings.Attach(booking);
-            }
-            else
-            {
-                _context.Entry(booking).CurrentValues.SetValues(current);
-            }
+            booking = await GetTrackedAsync(id, cancellationToken);
 
             // Повторная обработка не должна повторно возвращать место или подтверждать отказ.
             if (booking.Status == BookingStatus.Rejected ||
                 (!reject && booking.Status != BookingStatus.Pending))
                 return booking.Status;
 
-            var currentEvent = await _context.Events.AsNoTracking()
-                .SingleOrDefaultAsync(e => e.Id == booking.EventId, cancellationToken);
-            if (currentEvent is not null)
-            {
-                eventItem = _context.Events.Local.FirstOrDefault(e => e.Id == booking.EventId);
-                if (eventItem is null)
-                {
-                    eventItem = currentEvent;
-                    _context.Events.Attach(eventItem);
-                }
-                else
-                {
-                    _context.Entry(eventItem).CurrentValues.SetValues(currentEvent);
-                }
-            }
+            eventItem = await _eventRepository.GetTrackedAsync(
+                booking.EventId, includeDeleted: true, cancellationToken: cancellationToken);
 
             if (reject || eventItem is null || eventItem.IsDeleted)
             {
@@ -141,16 +114,16 @@ public class BookingService(AppDbContext context) : IBookingService
             }
 
             // Статус и место сохраняются одной транзакцией PostgreSQL.
-            await _context.SaveChangesAsync(cancellationToken);
+            await _bookingRepository.SaveChangesAsync(cancellationToken);
             return booking.Status;
         }
         catch
         {
             // Не оставляем несохранённый переход в отслеживаемом состоянии.
             if (booking is not null)
-                _context.Entry(booking).State = EntityState.Detached;
+                _bookingRepository.Detach(booking);
             if (eventItem is not null)
-                _context.Entry(eventItem).State = EntityState.Detached;
+                _eventRepository.Detach(eventItem);
             throw;
         }
         finally
@@ -159,15 +132,7 @@ public class BookingService(AppDbContext context) : IBookingService
         }
     }
 
-    private async Task<Booking> GetTrackedAsync(Guid id, CancellationToken cancellationToken)
-    {
-        var current = await GetAsync(id, cancellationToken);
-        var tracked = _context.Bookings.Local.FirstOrDefault(b => b.Id == id);
-        if (tracked is null)
-        {
-            _context.Bookings.Attach(current);
-            return current;
-        }
-        return tracked;
-    }
+    private async Task<Booking> GetTrackedAsync(Guid id, CancellationToken cancellationToken) =>
+        await _bookingRepository.GetTrackedAsync(id, cancellationToken)
+        ?? throw new NotFoundException("Booking", id);
 }
