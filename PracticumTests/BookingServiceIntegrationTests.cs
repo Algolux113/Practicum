@@ -68,17 +68,23 @@ public class BookingServiceIntegrationTests : IDisposable
 
     #region Успешные сценарии
 
+    /// <summary>
+    /// Тест: удаление события сохраняет историю броней и отклоняет ожидающую бронь при обработке
+    /// </summary>
     [Fact]
     public async Task DeleteEvent_ShouldPreserveHistoryAndRejectPendingBooking()
     {
+        // Arrange
         var (bookings, events) = CreateServices();
         var eventId = await CreateTestEvent(events, totalSeats: 3);
         var confirmed = await bookings.CreateBookingAsync(eventId);
         await bookings.ProcessPendingAsync(confirmed.Id);
         var pending = await bookings.CreateBookingAsync(eventId);
 
+        // Act
         await events.DeleteAsync(eventId);
 
+        // Assert
         using var scope = _serviceProvider.CreateScope();
         var freshEvents = scope.ServiceProvider.GetRequiredService<IEventService>();
         var freshBookings = scope.ServiceProvider.GetRequiredService<IBookingService>();
@@ -91,9 +97,14 @@ public class BookingServiceIntegrationTests : IDisposable
         Assert.Equal(2, (await freshBookings.GetAllAsync()).Count);
     }
 
+    /// <summary>
+    /// Тест: отклонение брони сохраняет статус и освобождает место за одно сохранение,
+    /// а повторное отклонение и обработка не изменяют результат
+    /// </summary>
     [Fact]
     public async Task RejectAsync_ShouldSaveStatusAndSeatOnceAndBeIdempotent()
     {
+        // Arrange
         var (bookings, events) = CreateServices();
         var eventId = await CreateTestEvent(events, totalSeats: 3);
         var booking = await bookings.CreateBookingAsync(eventId);
@@ -104,10 +115,12 @@ public class BookingServiceIntegrationTests : IDisposable
         var saves = 0;
         context.SavingChanges += (_, _) => saves++;
 
+        // Act
         await service.RejectAsync(booking.Id);
         await service.RejectAsync(booking.Id);
         await service.ProcessPendingAsync(booking.Id);
 
+        // Assert
         Assert.Equal(1, saves);
         Assert.Equal(BookingStatus.Rejected, (await bookings.GetAsync(booking.Id)).Status);
         Assert.Equal(2, (await events.GetAsync(eventId)).AvailableSeats);

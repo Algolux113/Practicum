@@ -62,7 +62,6 @@ public class EventService(IEventRepository repository) : IEventService
             existing.EndAt = endAt;
             existing.TotalSeats = totalSeats;
             existing.AvailableSeats = availableSeats;
-            existing.IsDeleted = false;
 
             await _repository.SaveChangesAsync(cancellationToken);
         }
