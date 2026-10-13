@@ -1,14 +1,12 @@
-using Microsoft.EntityFrameworkCore;
-using PracticumApi.DataAccess;
+using PracticumApi.Exceptions;
 using PracticumApi.Interfaces;
 using PracticumApi.Models;
-using PracticumApi.Exceptions;
 
 namespace PracticumApi.Services;
 
-public class EventService(AppDbContext context) : IEventService
+public class EventService(IEventRepository repository) : IEventService
 {
-    private readonly AppDbContext _context = context;
+    private readonly IEventRepository _repository = repository;
 
     public async Task<PaginatedResult<Event>> GetAllAsync(
         string? title = null, DateTime? from = null, DateTime? to = null,
@@ -27,50 +25,46 @@ public class EventService(AppDbContext context) : IEventService
 
         from = from.HasValue ? UtcDateTime.Normalize(from.Value) : null;
         to = to.HasValue ? UtcDateTime.Normalize(to.Value) : null;
-        var query = _context.Events.AsNoTracking().Where(e => !e.IsDeleted);
-        if (!string.IsNullOrWhiteSpace(title))
-        {
-            var search = title.ToLower();
-            query = query.Where(e => e.Title != null && e.Title.ToLower().Contains(search));
-        }
-        if (from.HasValue)
-            query = query.Where(e => e.StartAt >= from.Value);
-        if (to.HasValue)
-            query = query.Where(e => e.EndAt <= to.Value);
-
-        var totalCount = await query.CountAsync(cancellationToken);
-        var items = await query.OrderBy(e => e.StartAt).ThenBy(e => e.Id)
-            .Skip((int)offset).Take(pageSize).ToListAsync(cancellationToken);
-        return new PaginatedResult<Event>(items, totalCount, page, pageSize);
+        var (items, totalCount) = await _repository.GetPageAsync(
+            title, from, to, (int)offset, pageSize, cancellationToken);
+        return new PaginatedResult<Event>(items.ToList(), totalCount, page, pageSize);
     }
 
     public async Task<Event> GetAsync(Guid id, CancellationToken cancellationToken = default) =>
-        await _context.Events.AsNoTracking().SingleOrDefaultAsync(e => e.Id == id && !e.IsDeleted, cancellationToken)
+        await _repository.GetAsync(id, cancellationToken: cancellationToken)
         ?? throw new NotFoundException("Event", id);
 
     public async Task AddAsync(Event eventItem, CancellationToken cancellationToken = default)
     {
         NormalizeDates(eventItem);
         eventItem.Id = Guid.NewGuid();
-        await _context.Events.AddAsync(eventItem, cancellationToken);
-        await _context.SaveChangesAsync(cancellationToken);
+        await _repository.AddAsync(eventItem, cancellationToken);
+        await _repository.SaveChangesAsync(cancellationToken);
     }
 
     public async Task UpdateAsync(Event eventItem, CancellationToken cancellationToken = default)
     {
         NormalizeDates(eventItem);
+        var title = eventItem.Title;
+        var description = eventItem.Description;
+        var startAt = eventItem.StartAt;
+        var endAt = eventItem.EndAt;
+        var totalSeats = eventItem.TotalSeats;
         await EventWriteSynchronization.Gate.WaitAsync(cancellationToken);
         try
         {
-            var values = _context.Entry(eventItem).CurrentValues.Clone();
-            var totalSeats = eventItem.TotalSeats;
             var existing = await GetTrackedAsync(eventItem.Id, cancellationToken);
-            // Пересчитываем места по свежим данным внутри той же секции, что и бронирование.
             var availableSeats = existing.RecalculateAvailableSeats(totalSeats);
-            _context.Entry(existing).CurrentValues.SetValues(values);
+
+            existing.Title = title;
+            existing.Description = description;
+            existing.StartAt = startAt;
+            existing.EndAt = endAt;
+            existing.TotalSeats = totalSeats;
             existing.AvailableSeats = availableSeats;
             existing.IsDeleted = false;
-            await _context.SaveChangesAsync(cancellationToken);
+
+            await _repository.SaveChangesAsync(cancellationToken);
         }
         finally
         {
@@ -85,7 +79,7 @@ public class EventService(AppDbContext context) : IEventService
         {
             var eventItem = await GetTrackedAsync(id, cancellationToken);
             eventItem.IsDeleted = true;
-            await _context.SaveChangesAsync(cancellationToken);
+            await _repository.SaveChangesAsync(cancellationToken);
         }
         finally
         {
@@ -101,7 +95,7 @@ public class EventService(AppDbContext context) : IEventService
             var eventItem = await GetTrackedAsync(id, cancellationToken);
             if (!eventItem.TryReserveSeats(count))
                 throw new NoAvailableSeatsException();
-            await _context.SaveChangesAsync(cancellationToken);
+            await _repository.SaveChangesAsync(cancellationToken);
         }
         finally
         {
@@ -116,7 +110,7 @@ public class EventService(AppDbContext context) : IEventService
         {
             var eventItem = await GetTrackedAsync(id, cancellationToken);
             eventItem.ReleaseSeats(count);
-            await _context.SaveChangesAsync(cancellationToken);
+            await _repository.SaveChangesAsync(cancellationToken);
         }
         finally
         {
@@ -124,18 +118,9 @@ public class EventService(AppDbContext context) : IEventService
         }
     }
 
-    private async Task<Event> GetTrackedAsync(Guid id, CancellationToken cancellationToken)
-    {
-        var current = await GetAsync(id, cancellationToken);
-        var tracked = _context.Events.Local.FirstOrDefault(e => e.Id == id);
-        if (tracked is null)
-        {
-            _context.Events.Attach(current);
-            return current;
-        }
-        _context.Entry(tracked).CurrentValues.SetValues(current);
-        return tracked;
-    }
+    private async Task<Event> GetTrackedAsync(Guid id, CancellationToken cancellationToken) =>
+        await _repository.GetTrackedAsync(id, cancellationToken: cancellationToken)
+        ?? throw new NotFoundException("Event", id);
 
     private static void NormalizeDates(Event eventItem)
     {

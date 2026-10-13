@@ -63,10 +63,8 @@ public class BookingProcessingService(
     private async Task ProcessPendingBookingsAsync(CancellationToken cancellationToken)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var bookingService = scope.ServiceProvider.GetRequiredService<IBookingService>();
-        var pendingBookings = (await bookingService.GetAllAsync(cancellationToken))
-            .Where(b => b.Status == BookingStatus.Pending)
-            .ToList();
+        var bookingRepository = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
+        var pendingBookings = await bookingRepository.GetPendingAsync(cancellationToken);
 
         if (pendingBookings.Count == 0)
             return;

@@ -38,85 +38,7 @@ public class NotFoundException : Exception
 }
 ```
 
-**Примеры использования в EventService** (`_sync` — `ReaderWriterLockSlim`: `Get` берёт read-lock и не блокирует другие чтения, `Delete` — эксклюзивный write-lock):
-```csharp
-public Event Get(Guid id)
-{
-    _sync.EnterReadLock();
-    try
-    {
-        var eventItem = _events.FirstOrDefault(x => x.Id == id);
-        if (eventItem is null)
-            throw new NotFoundException("Event", id);
-
-        return eventItem;
-    }
-    finally
-    {
-        _sync.ExitReadLock();
-    }
-}
-
-public void Delete(Guid id)
-{
-    _sync.EnterWriteLock();
-    try
-    {
-        var eventItem = _events.FirstOrDefault(x => x.Id == id);
-        if (eventItem is null)
-            throw new NotFoundException("Event", id);
-
-        _events.Remove(eventItem);
-    }
-    finally
-    {
-        _sync.ExitWriteLock();
-    }
-}
-```
-
-**Примеры использования в BookingService** (методы `Get`, `Update` и `Delete`):
-```csharp
-public Booking Get(Guid id)
-{
-    lock (_sync)
-    {
-        var booking = _bookings.FirstOrDefault(x => x.Id == id);
-        if (booking is null)
-            throw new NotFoundException("Booking", id);
-
-        return booking;
-    }
-}
-```
-
-**Бронирование несуществующего события** (`CreateBookingAsync`):
-```csharp
-public Task<Booking> CreateBookingAsync(Guid eventId)
-{
-    // Объект брони не трогает общее состояние, поэтому собирается до входа в lock —
-    // критическая секция ниже держит замок минимально необходимое время.
-    var booking = new Booking
-    {
-        Id = Guid.NewGuid(),
-        EventId = eventId,
-        Status = BookingStatus.Pending,
-        CreatedAt = DateTime.UtcNow,
-    };
-
-    // Резерв места и добавление брони — атомарная пара под одним замком, иначе
-    // между ними мог бы вклиниться другой вызов CreateBookingAsync.
-    // NotFoundException — если события нет, NoAvailableSeatsException — если мест не осталось.
-    lock (_sync)
-    {
-        _eventService.ReserveSeats(eventId);
-        _bookings.Add(booking);
-    }
-
-    return Task.FromResult(booking);
-}
-```
-При вызове `POST /events/{id}/book` с несуществующим `id` middleware вернёт:
+Сервисы получают данные через `IEventRepository` и `IBookingRepository`; реализация репозиториев инкапсулирует запросы EF Core. Если репозиторий не находит объект, сервис выбрасывает `NotFoundException`. Например, `BookingService.CreateBookingAsync` выбрасывает её, если `IEventRepository` не вернул событие. Для `POST /events/{id}/book` middleware сформирует:
 ```
 HTTP/1.1 404 Not Found
 
@@ -226,31 +148,7 @@ public class NoAvailableSeatsException() : Exception("Нет свободных 
 }
 ```
 
-**Пример использования** (`IEventService.ReserveSeats` в [`EventService`](PracticumApi/Services/EventService.cs)):
-```csharp
-public void ReserveSeats(Guid id, int count = 1)
-{
-    // Резерв места мутирует AvailableSeats, поэтому нужен эксклюзивный write-lock:
-    // иначе два читателя могли бы одновременно пройти TryReserveSeats и увести
-    // AvailableSeats в минус.
-    _sync.EnterWriteLock();
-    try
-    {
-        var eventItem = _events.FirstOrDefault(x => x.Id == id);
-        if (eventItem is null)
-            throw new NotFoundException("Event", id);
-
-        if (!eventItem.TryReserveSeats(count))
-            throw new NoAvailableSeatsException();
-    }
-    finally
-    {
-        _sync.ExitWriteLock();
-    }
-}
-```
-
-`BookingService.CreateBookingAsync` вызывает `ReserveSeats` перед созданием брони, поэтому `POST /events/{id}/book` на событие без свободных мест вернёт `409 Conflict`:
+`BookingService.CreateBookingAsync` загружает событие через `IEventRepository` и вызывает `Event.TryReserveSeats()`. Если мест нет, он выбрасывает `NoAvailableSeatsException`; резерв места и добавление брони сохраняются одним `SaveChangesAsync()` через scoped-репозитории, использующие общий `AppDbContext`. Поэтому `POST /events/{id}/book` вернёт `409 Conflict`:
 
 **HTTP ответ:**
 ```
@@ -439,80 +337,13 @@ Content-Type: application/problem+json
 
 ## Тестирование
 
-Интеграционные тесты проверяют, что исключения выбрасываются в правильных сценариях:
+`PracticumTests` проверяет поведение сервисов на EF Core InMemory, включая `NotFoundException`, `ValidationException`, `NoAvailableSeatsException` и конкурентное резервирование мест. Тесты событий сгруппированы в partial-классе `EventServiceIntegrationTests`; сценарии бронирований находятся в `BookingServiceIntegrationTests`.
 
-- `EventServiceIntegrationTests` — покрывает `NotFoundException` (получение/обновление/удаление несуществующего события) и `ValidationException` (некорректные параметры пагинации, а также `Event.RecalculateAvailableSeats` при попытке уменьшить `TotalSeats` ниже числа занятых мест). Это один `partial`-класс, разбитый по файлам: сценарии `NotFoundException` и `RecalculateAvailableSeats` — в [`EventServiceCrudTests.cs`](PracticumTests/EventServiceCrudTests.cs), сценарии `ValidationException` по пагинации — в [`EventServicePaginationTests.cs`](PracticumTests/EventServicePaginationTests.cs).
-- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает `NotFoundException` при создании брони для несуществующего или удалённого события и при получении брони по несуществующему ID, а также `NoAvailableSeatsException` при исчерпании мест (последовательно и в конкурентных сценариях).
+[`PracticumIntegrationTests`](PracticumIntegrationTests/PracticumIntegrationTests.csproj) запускает PostgreSQL 16 через Testcontainers и проверяет применение миграций и все методы `EventRepository`/`BookingRepository`. Для запуска этого набора нужен работающий Docker:
 
-**Примеры из `EventServiceIntegrationTests`** (`Get_WithInvalidId_...` — в `EventServiceCrudTests.cs`, `GetAll_WithPageZero_...` — в `EventServicePaginationTests.cs`):
-
-```csharp
-[Fact]
-public void Get_WithInvalidId_ShouldThrowNotFoundException()
-{
-    // Arrange
-    var eventService = CreateEventService();
-    eventService.Add(new Event { Title = "Event", StartAt = DateTime.Now, EndAt = DateTime.Now.AddHours(1) });
-
-    // Act & Assert
-    Assert.Throws<NotFoundException>(() => eventService.Get(Guid.NewGuid()));
-}
-
-[Fact]
-public void GetAll_WithPageZero_ShouldThrowValidationException()
-{
-    // Arrange
-    var eventService = CreateEventService();
-
-    // Act & Assert
-    var ex = Assert.Throws<ValidationException>(() => eventService.GetAll(page: 0));
-    Assert.Contains("Номер страницы должен быть больше или равен 1", ex.Message);
-}
+```sh
+dotnet test PracticumIntegrationTests
 ```
-
-**Примеры из `BookingServiceIntegrationTests`:**
-
-> Примечание: `BookingService` принимает `IEventService` в конструкторе, поэтому тесты создают оба сервиса совместно. Хелпер `CreateTestEvent(eventService, totalSeats = 100)` создаёт событие через `Event.Create` с заданной вместимостью.
-
-```csharp
-[Fact]
-public async Task CreateBookingAsync_ForNonExistentEvent_ShouldThrowNotFoundException()
-{
-    // Arrange
-    var (bookingService, _) = CreateServices();
-
-    // Act & Assert
-    await Assert.ThrowsAsync<NotFoundException>(() =>
-        bookingService.CreateBookingAsync(Guid.NewGuid()));
-}
-
-[Fact]
-public async Task Get_WithInvalidId_ShouldThrowNotFoundException()
-{
-    // Arrange
-    var (bookingService, eventService) = CreateServices();
-    var eventId = CreateTestEvent(eventService);
-    await bookingService.CreateBookingAsync(eventId);
-
-    // Act & Assert
-    Assert.Throws<NotFoundException>(() => bookingService.Get(Guid.NewGuid()));
-}
-
-[Fact]
-public async Task CreateBookingAsync_WhenNoSeatsRemaining_ShouldThrowNoAvailableSeatsException()
-{
-    // Arrange
-    var (bookingService, eventService) = CreateServices();
-    var eventId = CreateTestEvent(eventService, totalSeats: 1);
-    await bookingService.CreateBookingAsync(eventId);
-
-    // Act & Assert
-    await Assert.ThrowsAsync<NoAvailableSeatsException>(() =>
-        bookingService.CreateBookingAsync(eventId));
-}
-```
-
-`BookingServiceIntegrationTests` также содержит регион `#region Конкурентность` с тестами на гонки при резервировании мест: N конкурентных запросов на событие с ограниченной вместимостью должны дать ровно `totalSeats` успешных броней и `NoAvailableSeatsException` для остальных, без превышения `AvailableSeats` ниже нуля.
 
 ## Расширение системы
 
