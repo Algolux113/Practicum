@@ -2,4 +2,5 @@
   <Project Path="PracticumApi/PracticumApi.csproj" />
   <Project Path="PracticumIntegrationTests/PracticumIntegrationTests.csproj" />
   <Project Path="PracticumTests/PracticumTests.csproj" />
+  <Project Path="Domain/Domain.csproj" />
 </Solution>
