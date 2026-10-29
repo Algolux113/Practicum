@@ -1,0 +1,36 @@
+using Application.Common;
+using System.ComponentModel.DataAnnotations;
+
+namespace Application.DTOs;
+
+public class EventDTO : IValidatableObject
+{
+    [Required(ErrorMessage = "Поле \"Title\" обязательно.")]
+    [MaxLength(200, ErrorMessage = "Название не должно превышать 200 символов.")]
+    public string? Title { get; set; }
+
+    [MaxLength(2000, ErrorMessage = "Описание не должно превышать 2000 символов.")]
+    public string? Description { get; set; }
+
+    [Required(ErrorMessage = "Поле \"StartAt\" обязательно.")]
+    public DateTime? StartAt { get; set; }
+
+    [Required(ErrorMessage = "Поле \"EndAt\" обязательно.")]
+    public DateTime? EndAt { get; set; }
+
+    [Required(ErrorMessage = "Поле \"TotalSeats\" обязательно.")]
+    [Range(1, int.MaxValue, ErrorMessage = "Поле \"TotalSeats\" должно быть больше 0.")]
+    public int? TotalSeats { get; set; }
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (StartAt.HasValue && EndAt.HasValue &&
+            UtcDateTime.Normalize(EndAt.Value) <= UtcDateTime.Normalize(StartAt.Value))
+        {
+            yield return new ValidationResult(
+                "Дата окончания должна быть больше даты начала.",
+                [nameof(EndAt)]
+            );
+        }
+    }
+}

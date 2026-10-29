@@ -1,4 +1,4 @@
-# Обработка ошибок в PracticumApi
+# Обработка ошибок в Presentation
 
 ## Обзор
 
@@ -7,7 +7,7 @@
 ## Структура
 
 ```
-PracticumApi/
+Presentation/
 ├── Exceptions/
 │   ├── NotFoundException.cs          # Ресурс не найден
 │   ├── ValidationException.cs        # Ошибка валидации
@@ -119,7 +119,7 @@ public class EventDTO : IValidatableObject
 
 Ошибки уровня DTO (атрибуты `[Required]`, `IValidatableObject`) не проходят через
 middleware — их перехватывает конвейер MVC. Чтобы формат ответа совпадал с доменными
-`ValidationException`, в [`Program.cs`](PracticumApi/Program.cs) переопределён
+`ValidationException`, в [`Program.cs`](Presentation/Program.cs) переопределён
 `ApiBehaviorOptions.InvalidModelStateResponseFactory`: он собирает сообщения об ошибках
 в одно поле `detail` и возвращает тот же `ProblemDetails` (`title` = "Validation error",
 статус 400, `Content-Type: application/problem+json`).
@@ -148,7 +148,7 @@ public class NoAvailableSeatsException() : Exception("Нет свободных 
 }
 ```
 
-`BookingService.CreateBookingAsync` загружает событие через `IEventRepository` и вызывает `Event.TryReserveSeats()`. Если мест нет, он выбрасывает `NoAvailableSeatsException`; резерв места и добавление брони сохраняются одним `SaveChangesAsync()` через scoped-репозитории, использующие общий `AppDbContext`. Поэтому `POST /events/{id}/book` вернёт `409 Conflict`:
+`BookingService.CreateBookingAsync` загружает событие через `IEventRepository` и вызывает `Event.TryReserveSeats()`. Если мест нет, он выбрасывает `NoAvailableSeatsException`; резерв места и добавление брони сохраняются одним `SaveChangesAsync()` внутри реализации `IUnitOfWork` в Infrastructure. Поэтому `POST /events/{id}/book` вернёт `409 Conflict`:
 
 **HTTP ответ:**
 ```
@@ -337,12 +337,12 @@ Content-Type: application/problem+json
 
 ## Тестирование
 
-`PracticumTests` проверяет поведение сервисов на EF Core InMemory, включая `NotFoundException`, `ValidationException`, `NoAvailableSeatsException` и конкурентное резервирование мест. Тесты событий сгруппированы в partial-классе `EventServiceIntegrationTests`; сценарии бронирований находятся в `BookingServiceIntegrationTests`.
+`Tests` проверяет поведение сервисов на EF Core InMemory, включая `NotFoundException`, `ValidationException`, `NoAvailableSeatsException` и конкурентное резервирование мест. Тесты событий сгруппированы в partial-классе `EventServiceIntegrationTests`; сценарии бронирований находятся в `BookingServiceIntegrationTests`.
 
-[`PracticumIntegrationTests`](PracticumIntegrationTests/PracticumIntegrationTests.csproj) запускает PostgreSQL 16 через Testcontainers и проверяет применение миграций и все методы `EventRepository`/`BookingRepository`. Для запуска этого набора нужен работающий Docker:
+[`IntegrationTests`](IntegrationTests/IntegrationTests.csproj) запускает PostgreSQL 16 через Testcontainers и проверяет применение миграций и все методы `EventRepository`/`BookingRepository`. Для запуска этого набора нужен работающий Docker:
 
 ```sh
-dotnet test PracticumIntegrationTests
+dotnet test IntegrationTests
 ```
 
 ## Расширение системы
@@ -377,13 +377,13 @@ dotnet test PracticumIntegrationTests
 4. **Пометьте экшены, которые могут его бросить, `[ProducesResponseType]`:**
    ```csharp
    [HttpPost]
-   [ProducesResponseType(typeof(Booking), StatusCodes.Status202Accepted)]
+   [ProducesResponseType(typeof(BookingResponse), StatusCodes.Status202Accepted)]
    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
    public async Task<IActionResult> Book(Guid id) { ... }
    ```
-   Middleware работает вне MVC-конвейера, поэтому генератор OpenAPI (`Microsoft.AspNetCore.OpenApi`, `AddOpenApi()`/`MapOpenApi()` в [`Program.cs`](PracticumApi/Program.cs)) о нём не знает — без явного атрибута новый код ответа не попадёт в `/openapi/v1.json` и не будет виден в Swagger UI, даже если middleware уже умеет его возвращать.
+   Middleware работает вне MVC-конвейера, поэтому генератор OpenAPI (`Microsoft.AspNetCore.OpenApi`, `AddOpenApi()`/`MapOpenApi()` в [`Program.cs`](Presentation/Program.cs)) о нём не знает — без явного атрибута новый код ответа не попадёт в `/openapi/v1.json` и не будет виден в Swagger UI, даже если middleware уже умеет его возвращать.
 
-> `NoAvailableSeatsException` (см. выше) — реальный пример именно такого расширения: собственное исключение + бросок из `EventService.ReserveSeats` + кейс в `MapStatusCode` → `409 Conflict` + `[ProducesResponseType]` на `BookingController.Book`.
+> `NoAvailableSeatsException` (см. выше) — реальный пример именно такого расширения: собственное исключение + бросок из `BookingService.CreateBookingAsync` + кейс в `MapStatusCode` → `409 Conflict` + `[ProducesResponseType]` на `BookingController.Book`.
 
 ## Преимущества текущей архитектуры
 

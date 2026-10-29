@@ -1,6 +1,34 @@
 # Practicum
 ASP.NET Core API для событий и бронирований с хранением данных в PostgreSQL через EF Core.
 
+Сущности создаются через `Event.Create(...)` и `Booking.Create(...)`: фабрики назначают идентификаторы, вместимость и начальное состояние. Сеттеры закрыты, навигация `Event.Bookings` доступна только для чтения. `Event.Update(...)` обновляет поля целиком и сохраняет число занятых мест; неудачная проверка вместимости не меняет состояние. Удаление выполняется через `Event.Delete()`, переходы статусов — через `Booking.Confirm()` и `Booking.Reject()`. Повторный переход не меняет время обработки, подтверждение отклонённой брони запрещено.
+
+## Структура решения
+
+| Проект | Назначение |
+| --- | --- |
+| `Domain` | Сущности `Event`, `Booking`, перечисление `BookingStatus` и доменные исключения. Не зависит от других проектов, ASP.NET Core и EF Core. |
+| `Application` | Сценарии создания и изменения событий, бронирования, DTO, интерфейсы сервисов и порты репозиториев. Регистрация сервисов через `AddApplication()`. |
+| `Infrastructure` | Реализации репозиториев, `AppDbContext`, конфигурации EF Core, миграции PostgreSQL и фоновый адаптер обработки бронирований. Регистрация через `AddInfrastructure(...)`. |
+| `Presentation` | HTTP-контроллеры, глобальный обработчик исключений, настройки JSON и HTTP, composition root в `Program.cs`. Контроллеры передают DTO сервисам Application и формируют HTTP-ответы. |
+| `Tests` | Проверки сервисов на EF Core InMemory, валидации DTO, сериализации и регистрации DI. |
+| `IntegrationTests` | Проверки репозиториев и миграций на PostgreSQL 16 через Testcontainers. |
+
+Ссылки между основными проектами направлены так:
+
+```text
+Presentation   -> Application, Infrastructure
+Infrastructure -> Application, Domain
+Application    -> Domain
+Domain         -> нет ссылок на проекты
+```
+
+`Application` не ссылается на `Infrastructure`: доступ к данным описывают интерфейсы в `Application/Interfaces`, которые реализуют репозитории Infrastructure. Оба репозитория и `AppDbContext` имеют scoped-время жизни, поэтому изменения брони и мест сохраняются вместе. В `Program.cs` вызываются `AddApplication()`, `AddInfrastructure(...)` и `AddPresentation()`.
+
+Операции записи Application выполняет через порт `IUnitOfWork.ExecuteAsync`. Реализация `UnitOfWork` в Infrastructure сохраняет изменения один раз, пропускает сохранение при отсутствии изменений и очищает несохранённое состояние при исключении. События и брони имеют теневое свойство `Version` в Infrastructure, которое хранится в PostgreSQL в колонке `version` и проверяется EF Core в условии `UPDATE`. `AppDbContext` назначает новую UUID-версию при каждой записи. Это защищает от потери обновлений между разными экземплярами API без глобального семафора. Порты репозиториев предоставляют `GetForUpdateAsync` для получения актуальной сущности перед изменением, не раскрывая EF Core, отслеживание или отключение сущностей.
+
+Повтор ограничен 20 попытками с небольшой случайной задержкой, учитывающей отмену запроса. При исчерпании попыток ConcurrencyConflictException отображается в 409 Conflict. Делегат IUnitOfWork.ExecuteAsync может вызываться повторно: внешние побочные эффекты (например, отправку сообщений) в нём выполнять нельзя. Миграция AddConcurrencyVersions добавляет технические колонки к существующим данным без изменения доменных типов; она применяется при запуске API. Для исходных строк версия становится ненулевой при первой записи.
+
 ## Требования и запуск
 
 - .NET SDK 10.x.
@@ -17,7 +45,7 @@ ASP.NET Core API для событий и бронирований с хране
    ```
 
    База `eventapi` доступна на `localhost:5432`; пользователь и пароль — `postgres`. Данные контейнера сохраняются в именованном томе.
-3. Настройте строку подключения в разделе `ConnectionStrings` файла [appsettings.json](PracticumApi/appsettings.json):
+3. Настройте строку подключения в разделе `ConnectionStrings` файла [appsettings.json](Presentation/appsettings.json):
 
    ```json
    "ConnectionStrings": {
@@ -30,19 +58,37 @@ ASP.NET Core API для событий и бронирований с хране
 
    ```sh
    dotnet build
-   dotnet run --launch-profile https --project PracticumApi
+   dotnet run --launch-profile https --project Presentation
    ```
 
 5. Откройте [Swagger UI](https://localhost:7008/swagger/).
 
+### Проверка через Swagger
+
+Swagger доступен только в окружении `Development`, которое задаётся профилем запуска `https`. Используйте адрес HTTPS выше, чтобы запросы OpenAPI и API не зависели от перенаправления с HTTP.
+
+1. В `POST /events` нажмите **Try it out**, задайте `title`, `description`, `startAt`, `endAt` (окончание позже начала), `totalSeats: 3` и нажмите **Execute**. Ожидается `201 Created`; сохраните `id` события из ответа.
+2. Выполните `POST /events/{id}/book` с этим ID. Ожидается `202 Accepted`, статус `Pending` и ID брони.
+3. Выполните `GET /bookings/{id}` с ID брони. Ожидается `200 OK`; через несколько секунд фоновая обработка изменит статус на `Confirmed` и заполнит `processedAt`.
+4. Выполните `GET /events/{id}` с ID события. Ожидается `200 OK`, `totalSeats: 3`, `availableSeats: 2`.
+
 ### Миграции базы данных
 
-После `builder.Build()` приложение вызывает `db.Database.Migrate()` и применяет все ещё не выполненные миграции. Начальная миграция создаёт таблицы `events` и `bookings`, внешний ключ `bookings.event_id → events.id` и индекс по `event_id`. PostgreSQL и база `eventapi` должны существовать до запуска приложения; пользователь подключения должен иметь право создавать таблицы и индексы.
+После `builder.Build()` приложение вызывает `app.Services.ApplyInfrastructureMigrations()`. Этот extension-метод из Infrastructure создаёт scope и вызывает `Database.Migrate()`, применяя все ещё не выполненные миграции. Начальная миграция создаёт таблицы `events` и `bookings`, внешний ключ `bookings.event_id → events.id` и индекс по `event_id`. PostgreSQL и база `eventapi` должны существовать до запуска приложения; пользователь подключения должен иметь право создавать таблицы и индексы.
 
 Последующие изменения модели оформляйте новыми миграциями. Для создания миграции выполните из корня репозитория, заменив `<MigrationName>` её названием:
 
 ```sh
-dotnet ef migrations add <MigrationName> --project PracticumApi --startup-project PracticumApi
+dotnet ef migrations add <MigrationName> --project Infrastructure --startup-project Presentation
+```
+
+`--project Infrastructure` задаёт проект с `AppDbContext` и папкой `Migrations`, а `--startup-project Presentation` — запускаемый проект с конфигурацией и DI. Требуется инструмент `dotnet-ef` версии 10.x; если он не установлен, выполните `dotnet tool install --global dotnet-ef --version "10.*"`.
+
+Проверить список миграций и применить их вручную можно командами:
+
+```sh
+dotnet ef migrations list --project Infrastructure --startup-project Presentation
+dotnet ef database update --project Infrastructure --startup-project Presentation
 ```
 
 База, ранее созданная через `EnsureCreated`, автоматически не преобразуется миграцией в новую схему; её данные и структуру нужно перенести отдельно.
@@ -53,20 +99,20 @@ dotnet ef migrations add <MigrationName> --project PracticumApi --startup-projec
 
 ## Запуск тестов
 
-`PracticumTests` использует `Microsoft.EntityFrameworkCore.InMemory`, поэтому его можно запускать без PostgreSQL и Docker. `PracticumIntegrationTests` поднимает PostgreSQL 16 через Testcontainers; для этих тестов нужен работающий Docker.
+`Tests` использует `Microsoft.EntityFrameworkCore.InMemory`, поэтому его можно запускать без PostgreSQL и Docker. `IntegrationTests` поднимает PostgreSQL 16 через Testcontainers; для этих тестов нужен работающий Docker.
 
-В тестах сервисов `ServiceCollection` регистрирует `AppDbContext` с `UseInMemoryDatabase`, scoped-репозитории `IEventRepository` и `IBookingRepository`, а также сервисы `IEventService` и `IBookingService`. Имя InMemory-базы уникально для каждого теста. Параллельные запросы в тестах конкурентности получают отдельные scope и контексты.
+В тестах сервисов `ServiceCollection` регистрирует `AppDbContext` с `UseInMemoryDatabase`, scoped-репозитории `IEventRepository` и `IBookingRepository`, единицу работы `IUnitOfWork`, а также сервисы `IEventService` и `IBookingService`. Имя InMemory-базы уникально для каждого теста. Параллельные запросы в тестах конкурентности получают отдельные scope и контексты.
 
 Только тесты InMemory:
 
 ```sh
-dotnet test PracticumTests
+dotnet test Tests
 ```
 
 Только PostgreSQL-интеграционные тесты:
 
 ```sh
-dotnet test PracticumIntegrationTests
+dotnet test IntegrationTests
 ```
 
 Для запуска обоих наборов из корня решения выполните:
@@ -81,24 +127,24 @@ dotnet test --verbosity normal
 
 ### Проекты тестов
 
-[`PracticumTests`](PracticumTests/PracticumTests.csproj) проверяет поведение сервисов на InMemory-провайдере EF Core (без PostgreSQL и Docker):
+[`Tests`](Tests/Tests.csproj) проверяет поведение сервисов на InMemory-провайдере EF Core (без PostgreSQL и Docker):
 
 - `EventServiceIntegrationTests` — покрывает операции `EventService`: создание, получение, обновление, удаление, фильтрацию по названию/датам, пагинацию, а также сценарии ошибок (`NotFoundException`, `ValidationException`). Это один `partial`-класс, разбитый по файлам по проверяемому поведению:
-  - [`EventServiceIntegrationTests.cs`](PracticumTests/EventServiceIntegrationTests.cs) — настройка DI и InMemory-базы, общий helper `CreateEventService()` и освобождение scope;
-  - [`EventServiceCrudTests.cs`](PracticumTests/EventServiceCrudTests.cs) — `Add` / `Get` / `Update` / `Delete` и их сценарии `NotFoundException`;
-  - [`EventServiceFilteringTests.cs`](PracticumTests/EventServiceFilteringTests.cs) — фильтрация `GetAll` по названию и диапазону дат;
-  - [`EventServicePaginationTests.cs`](PracticumTests/EventServicePaginationTests.cs) — пагинация `GetAll` и валидация `page` / `pageSize`;
-  - [`EventServiceDateHandlingTests.cs`](PracticumTests/EventServiceDateHandlingTests.cs) — события с `EndAt < StartAt` всё равно сохраняются (на уровне сервиса дат не валидируются).
-- [`BookingServiceIntegrationTests`](PracticumTests/BookingServiceIntegrationTests.cs) — покрывает операции `BookingService`: создание брони для существующего события (включая уменьшение `AvailableSeats` события — после одной брони и после каждой из серии), получение по ID, переходы статусов (`Confirm`/`Reject`, возврат места через `ReleaseSeats`), а также сценарии ошибок (`NotFoundException` при несуществующем/удалённом событии, `NoAvailableSeatsException` при исчерпании мест). Один файл.
+  - [`EventServiceIntegrationTests.cs`](Tests/EventServiceIntegrationTests.cs) — настройка DI и InMemory-базы, общий helper `CreateEventService()` и освобождение scope;
+  - [`EventServiceCrudTests.cs`](Tests/EventServiceCrudTests.cs) — `Add` / `Get` / `Update` / `Delete` и их сценарии `NotFoundException`;
+  - [`EventServiceFilteringTests.cs`](Tests/EventServiceFilteringTests.cs) — фильтрация `GetAll` по названию и диапазону дат;
+  - [`EventServicePaginationTests.cs`](Tests/EventServicePaginationTests.cs) — пагинация `GetAll` и валидация `page` / `pageSize`;
+  - [`EventServiceDateHandlingTests.cs`](Tests/EventServiceDateHandlingTests.cs) — нормализация дат и поведение низкоуровневых методов с сущностями. Методы `CreateAsync(EventDTO)` и `UpdateAsync(id, EventDTO)` проверяют DTO, включая порядок дат, независимо от HTTP-конвейера.
+- [`BookingServiceIntegrationTests`](Tests/BookingServiceIntegrationTests.cs) — покрывает операции `BookingService`: создание брони для существующего события (включая уменьшение `AvailableSeats` события — после одной брони и после каждой из серии), получение по ID, переходы статусов (`Confirm`/`Reject`, возврат места через `ReleaseSeats`), а также сценарии ошибок (`NotFoundException` при несуществующем/удалённом событии, `NoAvailableSeatsException` при исчерпании мест). Один файл.
 
 Тесты сервисов сгруппированы через `#region`:
 - **Успешные сценарии**;
 - **Неуспешные сценарии**;
-- **Конкурентность** (только в `BookingServiceIntegrationTests`) — тесты на реальном параллелизме (`Task.Run` + `Task.WhenAll`, не последовательные `await`): защита от овербукинга (N мест / больше N конкурентных запросов — ровно N успехов с уникальными `Id`, остальные `NoAvailableSeatsException`, `AvailableSeats = 0`) и уникальность `Id` при параллельных запросах в пределах вместимости.
+- **Конкурентность** проверяется в `IntegrationTests/BookingConcurrencyTests.cs` на PostgreSQL: 30 параллельных запросов через два независимых DI-контейнера, атомарный откат конфликтующего сохранения, однократный возврат места при параллельных отказах и параллельная запись в разные события. EF InMemory не обеспечивает откат частично выполненного сохранения при конфликте и не используется для проверки атомарности конкурентных записей.
 
 Используемые пакеты: `xunit`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`, `Microsoft.EntityFrameworkCore.InMemory`, `Moq`, `coverlet.collector`.
 
-[`PracticumIntegrationTests`](PracticumIntegrationTests/PracticumIntegrationTests.csproj) проверяет схему PostgreSQL и репозитории на настоящем PostgreSQL 16 в Testcontainers. Фикстура поднимает контейнер и создаёт отдельную базу для каждого теста. Набор проверяет применение миграций (таблицы и внешний ключ), а также все методы `EventRepository` и `BookingRepository`. Используемые пакеты включают `Testcontainers.PostgreSql`, `Microsoft.EntityFrameworkCore` и `Npgsql.EntityFrameworkCore.PostgreSQL`. Для запуска нужен работающий Docker.
+[`IntegrationTests`](IntegrationTests/IntegrationTests.csproj) проверяет схему PostgreSQL и репозитории на настоящем PostgreSQL 16 в Testcontainers. Фикстура поднимает контейнер и создаёт отдельную базу для каждого теста. Набор проверяет применение миграций (таблицы и внешний ключ), а также все методы `EventRepository` и `BookingRepository`. Используемые пакеты включают `Testcontainers.PostgreSql`, `Microsoft.EntityFrameworkCore` и `Npgsql.EntityFrameworkCore.PostgreSQL`. Для запуска нужен работающий Docker.
 
 ## Формат ошибок API
 
@@ -327,23 +373,23 @@ curl -X 'DELETE' \
 
 ## Вместимость события (Seats)
 
-Модель [`Event`](PracticumApi/Models/Event.cs) хранит `totalSeats` (общее число мест, обязательно и должно быть больше 0) и `availableSeats` (свободные места; при создании равно `totalSeats`).
+Модель [`Event`](Domain/Models/Event.cs) хранит `totalSeats` (общее число мест, обязательно и должно быть больше 0) и `availableSeats` (свободные места; при создании равно `totalSeats`).
 
 - События создаются через фабричный метод `Event.Create(...)`, который валидирует `totalSeats` и бросает `ValidationException` при `totalSeats <= 0`.
-- `POST /events/{id}/book` вызывает `BookingService.CreateBookingAsync`: сервис получает отслеживаемое событие и сохраняет бронь через `IEventRepository` и `IBookingRepository`. Оба репозитория используют один scoped `AppDbContext`, поэтому резерв места и создание брони фиксируются одним `SaveChangesAsync()`. При отсутствии мест возвращается `409 No available seats`.
-- `IEventService.ReleaseSeatsAsync` возвращает место обратно (например, при отклонении брони); значение не может превысить `totalSeats`.
+- `POST /events/{id}/book` вызывает `BookingService.CreateBookingAsync`: сервис получает событие для изменения и добавляет бронь через `IEventRepository` и `IBookingRepository`. Оба репозитория используют один scoped `AppDbContext`, поэтому резерв места и создание брони фиксируются одним `SaveChangesAsync()`. При отсутствии мест возвращается `409 No available seats`.
+- Резервирование и освобождение мест инкапсулированы в сценариях создания и отклонения брони. Публичных методов сервисов для произвольного изменения числа мест нет; доменные операции проверяют положительное количество и ограничивают результат вместимостью.
 - `PUT /events/{id}` пересчитывает `availableSeats` так, чтобы число уже занятых мест сохранилось, а не переносится как есть, и запрещает уменьшать `totalSeats` ниже числа уже занятых мест (`400 Validation error`) — иначе `availableSeats` пришлось бы либо уводить в минус, либо молча обнулять, оставляя лишние `Pending`-брони, которые фоновый сервис затем подтвердил бы поверх новой вместимости.
-- `AppDbContext`, репозитории и сервисы зарегистрированы как scoped. Сервисы обращаются к данным только через `IEventRepository` и `IBookingRepository`; EF Core и `DbSet` используются в реализациях репозиториев. Общий статический `SemaphoreSlim` синхронизирует резервирование, возврат мест и изменение события между scope одного процесса.
+- `AppDbContext`, репозитории и сервисы зарегистрированы как scoped. Сервисы обращаются к данным только через `IEventRepository` и `IBookingRepository`; EF Core и `DbSet` используются в реализациях репозиториев. `UnitOfWork` из Infrastructure повторяет всю операцию при конфликте версии, перечитывая данные. Бронь и резерв места сохраняются одним атомарным `SaveChangesAsync`; проигравшая транзакция не оставляет лишней брони. Записи в разные события выполняются параллельно.
 
 ## Бронирования (Bookings)
 
-Бронирования реализованы через [`IBookingService`](PracticumApi/Interfaces/IBookingService.cs) и [`BookingService`](PracticumApi/Services/BookingService.cs), который работает с PostgreSQL через [`IBookingRepository`](PracticumApi/Interfaces/IBookingRepository.cs) и [`IEventRepository`](PracticumApi/Interfaces/IEventRepository.cs). Контроллер [`BookingController`](PracticumApi/Controllers/BookingController.cs) обслуживает маршрут `/bookings`.
+Бронирования реализованы через [`IBookingService`](Application/Interfaces/IBookingService.cs) и [`BookingService`](Application/Services/BookingService.cs), который работает с PostgreSQL через [`IBookingRepository`](Application/Interfaces/IBookingRepository.cs) и [`IEventRepository`](Application/Interfaces/IEventRepository.cs). Контроллер [`BookingController`](Presentation/Controllers/BookingController.cs) обслуживает маршрут `/bookings`.
 
-Бронирования в статусе `Pending` автоматически обрабатываются фоновым сервисом [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs): он периодически опрашивает хранилище и переводит ожидающие брони в статус `Confirmed`, имитируя обработку внешней системой. Подробнее — в разделе [Автоматическая обработка бронирований](#автоматическая-обработка-бронирований).
+Бронирования в статусе `Pending` автоматически обрабатываются фоновым сервисом [`BookingProcessingService`](Infrastructure/Hosting/BookingProcessingService.cs): он периодически опрашивает хранилище и переводит ожидающие брони в статус `Confirmed`, имитируя обработку внешней системой. Подробнее — в разделе [Автоматическая обработка бронирований](#автоматическая-обработка-бронирований).
 
 ### Модель Booking
 
-Поля модели [`Booking`](PracticumApi/Models/Booking.cs):
+Поля модели [`Booking`](Domain/Models/Booking.cs):
 
 | Поле | Тип | Описание |
 |------|-----|----------|
@@ -361,7 +407,13 @@ curl -X 'DELETE' \
 | `Confirmed` | Бронь подтверждена (перевод из `Pending` выполняет `BookingProcessingService`) |
 | `Rejected` | Бронь отклонена — событие исчезло к моменту обработки, либо обработка завершилась неожиданной ошибкой (место при этом возвращается событию) |
 
-Переходы между статусами инкапсулированы в методах [`Booking.Confirm()`](PracticumApi/Models/Booking.cs) и `Booking.Reject()` — оба выставляют `Status` и `ProcessedAt = DateTime.UtcNow`.
+Переходы между статусами инкапсулированы в методах [`Booking.Confirm()`](Domain/Models/Booking.cs) и `Booking.Reject()` — оба выставляют `Status` и `ProcessedAt = DateTime.UtcNow`.
+
+Публичный контракт `IBookingService` содержит только получение и создание брони, обработку ожидающей брони (`ProcessPendingAsync`) и отказ (`RejectAsync`). Универсального изменения статуса, удаления и списка бронирований в контракте нет. Событие и время создания существующей брони изменить нельзя. Отказ освобождает место в той же единице работы, повторный отказ не освобождает его снова. Время обработки устанавливает сама сущность.
+
+`IEventService` предоставляет список, получение, создание через `EventDTO`, обновление через `id` и `EventDTO` и мягкое удаление события. Тесты используют те же сценарии. Репозитории не предоставляют `SaveChangesAsync` и `Detach`: сохранением и очисткой после ошибок владеет `IUnitOfWork`, включая интеграционные тесты PostgreSQL.
+
+Контроллеры возвращают DTO из `Application.DTOs`: `EventResponse` и `BookingResponse`, а список событий — `PaginatedResult<EventResponse>`. Маппинг явно перечисляет поля ответа. `EventResponse` не содержит `bookings` и `isDeleted`, `BookingResponse` не содержит обратной ссылки `event`: клиент не получает вводящий в заблуждение пустой список незагруженных навигаций. Доменные сущности не сериализуются в HTTP-ответах, специальный JSON-резолвер не нужен. Для контроллеров и генератора OpenAPI используются общие настройки строковой сериализации `BookingStatus`.
 
 ### GET /bookings/{id}
 Получить бронь по идентификатору. Если бронь не найдена — `404 Resource not found`.
@@ -385,14 +437,14 @@ curl -X 'GET' \
 
 ### Автоматическая обработка бронирований
 
-Фоновый сервис [`BookingProcessingService`](PracticumApi/Services/BookingProcessingService.cs) наследует `BackgroundService` и регистрируется в DI через `AddHostedService<BookingProcessingService>()` (см. [`Program.cs`](PracticumApi/Program.cs:12)).
+Фоновый адаптер [`BookingProcessingService`](Infrastructure/Hosting/BookingProcessingService.cs) наследует `BackgroundService` и регистрируется через `AddHostedService<BookingProcessingService>()` внутри [`AddInfrastructure(...)`](Infrastructure/DependencyInjection.cs). Он управляет опросом, DI-областями и восстановлением после сбоев; бизнес-переходы статусов выполняет `BookingService` из Application.
 
 **Принцип работы:**
 
 1. Сервис запускается вместе с приложением и каждые `PollingInterval` (**5 секунд**) создаёт DI scope и опрашивает `IBookingRepository`.
 2. Выбираются все брони в статусе `Pending`.
 3. Все найденные брони обрабатываются **параллельно** (`Task.WhenAll`) — при старте обработки каждая бронь сразу пишет в лог `Information`-сообщение (по нему видно, что несколько броней стартуют одновременно, а не по очереди), затем ждёт искусственную задержку `ProcessingDelay` (**2 секунды**), имитирующую обращение к внешней системе. Задержки идут одновременно, а не одна за другой.
-4. `IBookingService.ProcessPendingAsync` перечитывает статус брони и событие под общим статическим семафором, который также используется при удалении событий и резервировании мест:
+4. `IBookingService.ProcessPendingAsync` перечитывает статус брони и событие; версии строк защищают сохранение при параллельной обработке:
    - если событие, на которое сделана бронь, к этому моменту удалено — бронь переводится в `Rejected` (`Booking.Reject()`), сохраняется, и пишется лог уровня `Warning`;
    - иначе бронь переводится в `Confirmed` (`Booking.Confirm()`) и сохраняется.
 5. Если при обработке брони возникает непредвиденное исключение, создаётся новый scope для восстановления. `IBookingService.RejectAsync` сохраняет отказ и возврат места одним `SaveChangesAsync()` (одной транзакцией PostgreSQL). Повторный отказ не возвращает место второй раз. Ошибка записывается в лог уровня `Error`.
@@ -403,7 +455,7 @@ curl -X 'GET' \
 - Для опроса и каждой параллельно обрабатываемой брони создаются отдельные scope через `IServiceScopeFactory`. Репозитории и `AppDbContext` не разделяются между параллельными задачами; при восстановлении после ошибки используется ещё один свежий scope.
 - Ошибки при обработке не останавливают фоновый сервис — они логируются, после чего цикл продолжается.
 - `OperationCanceledException` и `TaskCanceledException` при остановке приложения обрабатываются как штатное завершение.
-- Общий статический семафор живёт до завершения процесса; фоновые задачи не используют отдельную блокировку записи.
+- Глобальной блокировки записи нет: конфликтующие операции повторяются после отката и чтения актуальных версий. Повторный отказ уже отклонённой брони не возвращает место снова.
 
 Это означает, что бронь, созданная через `POST /events/{id}/book` в статусе `Pending`, вскоре будет автоматически подтверждена (статус `Confirmed`) — если только событие не исчезло или не произошла ошибка, тогда бронь станет `Rejected`.
 
@@ -413,7 +465,7 @@ curl -X 'GET' \
 
 Проект использует единообразную систему обработки ошибок, основанную на собственных исключениях:
 
-### Собственные исключения (`PracticumApi.Exceptions`)
+### Собственные исключения (`Domain.Exceptions`)
 
 1. **`NotFoundException`** - выбрасывается, когда запрошенный ресурс не существует
    - Пример: `GET /events/{id}` когда события с указанным GUID нет
@@ -427,10 +479,10 @@ curl -X 'GET' \
    - Пример: `POST /events/{id}/book`, когда `availableSeats = 0`
    - HTTP статус: 409
 
-Эти ошибки также переиспользуются в сервисе бронирований [`BookingService`](PracticumApi/Services/BookingService.cs):
-- методы `GetAsync`, `UpdateAsync` и `DeleteAsync` выбрасывают `NotFoundException("Booking", id)` при обращении к несуществующему бронированию;
+Эти ошибки также переиспользуются в сервисе бронирований [`BookingService`](Application/Services/BookingService.cs):
+- методы `GetAsync`, `ProcessPendingAsync` и `RejectAsync` выбрасывают `NotFoundException("Booking", id)` при обращении к несуществующему бронированию;
 - `CreateBookingAsync` проверяет событие через `IEventRepository` и наличие мест, выбрасывая `NotFoundException` или `NoAvailableSeatsException` соответственно;
-- сервис регистрируется в DI через интерфейс [`IBookingService`](PracticumApi/Interfaces/IBookingService.cs).
+- сервис регистрируется в DI через интерфейс [`IBookingService`](Application/Interfaces/IBookingService.cs).
 
 ### Обработка исключений
 
