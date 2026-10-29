@@ -4,4 +4,5 @@
   <Project Path="PracticumTests/PracticumTests.csproj" />
   <Project Path="Domain/Domain.csproj" />
   <Project Path="Application/Application.csproj" />
+  <Project Path="Infrastructure/Infrastructure.csproj" />
 </Solution>

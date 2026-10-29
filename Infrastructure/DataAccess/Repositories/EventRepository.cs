@@ -1,0 +1,58 @@
+using Microsoft.EntityFrameworkCore;
+using Infrastructure.DataAccess;
+using Application.Interfaces;
+using Domain.Models;
+
+namespace Infrastructure.DataAccess.Repositories;
+
+public class EventRepository(AppDbContext context) : IEventRepository
+{
+    private readonly AppDbContext _context = context;
+
+    public async Task<(IReadOnlyList<Event> Items, int TotalCount)> GetPageAsync(
+        string? title, DateTime? from, DateTime? to, int skip, int take,
+        CancellationToken cancellationToken = default)
+    {
+        var query = _context.Events.AsNoTracking().Where(e => !e.IsDeleted);
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            var search = title.ToLower();
+            query = query.Where(e => e.Title != null && e.Title.ToLower().Contains(search));
+        }
+        if (from.HasValue)
+            query = query.Where(e => e.StartAt >= from.Value);
+        if (to.HasValue)
+            query = query.Where(e => e.EndAt <= to.Value);
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        var items = await query.OrderBy(e => e.StartAt).ThenBy(e => e.Id)
+            .Skip(skip).Take(take).ToListAsync(cancellationToken);
+        return (items, totalCount);
+    }
+
+    public Task<Event?> GetAsync(
+        Guid id, bool includeDeleted = false, CancellationToken cancellationToken = default)
+    {
+        var query = _context.Events.AsNoTracking().Where(e => e.Id == id);
+        if (!includeDeleted)
+            query = query.Where(e => !e.IsDeleted);
+        return query.SingleOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<Event?> GetForUpdateAsync(
+        Guid id, bool includeDeleted = false, CancellationToken cancellationToken = default)
+    {
+        var tracked = _context.Events.Local.FirstOrDefault(entity => entity.Id == id);
+        if (tracked is not null)
+            await _context.Entry(tracked).ReloadAsync(cancellationToken);
+
+        var query = _context.Events.Where(entity => entity.Id == id);
+        if (!includeDeleted)
+            query = query.Where(entity => !entity.IsDeleted);
+        return await query.SingleOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task AddAsync(Event eventItem, CancellationToken cancellationToken = default) =>
+        await _context.Events.AddAsync(eventItem, cancellationToken);
+
+}
