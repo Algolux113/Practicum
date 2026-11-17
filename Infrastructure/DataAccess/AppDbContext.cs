@@ -9,6 +9,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<Booking> Bookings => Set<Booking>();
 
+    public DbSet<User> Users => Set<User>();
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         UpdateVersions();
@@ -24,7 +26,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     private void UpdateVersions()
     {
         foreach (var entry in ChangeTracker.Entries()
-                     .Where(entry => entry.Entity is Event or Booking &&
+                     .Where(entry => entry.Entity is Event or Booking or User &&
                                      entry.State is EntityState.Added or EntityState.Modified))
         {
             entry.Property("Version").CurrentValue = Guid.NewGuid();
