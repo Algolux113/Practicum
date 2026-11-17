@@ -8,4 +8,6 @@ public interface IBookingRepository
     Task<Booking?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Booking?> GetForUpdateAsync(Guid id, CancellationToken cancellationToken = default);
     Task AddAsync(Booking booking, CancellationToken cancellationToken = default);
+    Task<bool> TrackUserForBookingAsync(Guid userId, CancellationToken cancellationToken = default);
+    Task<int> CountActiveAsync(Guid userId, CancellationToken cancellationToken = default);
 }

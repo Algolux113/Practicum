@@ -3,7 +3,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Infrastructure.DataAccess;
 using Infrastructure.DataAccess.Repositories;
 using Application.Interfaces;
-using Application;
+using Application.Services;
+using Domain.Models;
 
 namespace Tests;
 
@@ -19,6 +20,7 @@ public partial class EventServiceIntegrationTests : IDisposable
 {
     private readonly ServiceProvider _serviceProvider;
     private readonly IServiceScope _scope;
+    private readonly Guid _userId;
 
     public EventServiceIntegrationTests()
     {
@@ -29,13 +31,19 @@ public partial class EventServiceIntegrationTests : IDisposable
         services.AddScoped<IEventRepository, EventRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IBookingRepository, BookingRepository>();
-        services.AddApplication();
+        services.AddScoped<IEventService, EventService>();
+        services.AddScoped<IBookingService, BookingService>();
         _serviceProvider = services.BuildServiceProvider(new ServiceProviderOptions
         {
             ValidateScopes = true,
             ValidateOnBuild = true
         });
         _scope = _serviceProvider.CreateScope();
+        var context = _scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var user = User.Create("test-user", "test-hash");
+        context.Users.Add(user);
+        context.SaveChanges();
+        _userId = user.Id;
     }
 
     private IEventService CreateEventService() => _scope.ServiceProvider.GetRequiredService<IEventService>();

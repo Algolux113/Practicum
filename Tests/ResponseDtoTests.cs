@@ -12,7 +12,7 @@ public class ResponseDtoTests
         // Arrange
         var eventItem = Event.Create("Событие", "Описание", DateTime.UtcNow, DateTime.UtcNow.AddHours(1), 3);
         eventItem.Delete();
-        var booking = Booking.Create(eventItem.Id);
+        var booking = Booking.Create(eventItem.Id, Guid.NewGuid());
         booking.Confirm();
         eventItem.TryReserveSeats();
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);

@@ -101,7 +101,7 @@ public class BookingProcessingService(
         var bookingService = scope.ServiceProvider.GetRequiredService<IBookingService>();
         try
         {
-            // Проверка события и переход статуса выполняются по свежим данным под общим семафором.
+            // Проверка события и переход статуса используют версии записей.
             var status = await bookingService.ProcessPendingAsync(booking.Id, cancellationToken);
             _logger.LogInformation("Бронь {BookingId} обработана: {Status}.", booking.Id, status);
         }
@@ -115,14 +115,14 @@ public class BookingProcessingService(
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Не удалось обработать бронь {BookingId}, отклоняем и возвращаем место.", booking.Id);
+            _logger.LogError(ex, "Не удалось обработать бронь {BookingId}. Если она ещё ожидает обработки, отклоняем её.", booking.Id);
 
             // После сбоя SaveChanges используем новый контекст, без несохранённых изменений.
             await using var recoveryScope = _scopeFactory.CreateAsyncScope();
             var recoveryService = recoveryScope.ServiceProvider.GetRequiredService<IBookingService>();
             try
             {
-                await recoveryService.RejectAsync(booking.Id, cancellationToken);
+                await recoveryService.RejectPendingAsync(booking.Id, cancellationToken);
             }
             catch (NotFoundException)
             {

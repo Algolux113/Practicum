@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.Extensions.DependencyInjection;
+using System.Net.Http;
 using Presentation;
 using Presentation.Controllers;
 
@@ -28,12 +29,17 @@ public class OpenApiContractTests
 
         // Assert
         Assert.NotEmpty(document.Paths);
-        Assert.Equal(new[] { "Pending", "Confirmed", "Rejected" },
+        Assert.Equal(new[] { "Pending", "Confirmed", "Rejected", "Cancelled" },
             schemas["BookingStatus"].Enum!.Select(value => value!.GetValue<string>()));
         Assert.DoesNotContain("event", schemas["BookingResponse"].Properties!.Keys);
         Assert.DoesNotContain("isDeleted", schemas["EventResponse"].Properties!.Keys);
         Assert.DoesNotContain("bookings", schemas["EventResponse"].Properties!.Keys);
         Assert.DoesNotContain("Event", schemas.Keys);
         Assert.DoesNotContain("Booking", schemas.Keys);
+        Assert.Equal("bearer", document.Components.SecuritySchemes!["Bearer"].Scheme);
+        Assert.Single(document.Paths["/events"].Operations![HttpMethod.Post].Security!);
+        Assert.Single(document.Paths["/events/{id}/book"].Operations![HttpMethod.Post].Security!);
+        Assert.Null(document.Paths["/events"].Operations![HttpMethod.Get].Security);
+        Assert.Null(document.Paths["/auth/login"].Operations![HttpMethod.Post].Security);
     }
 }

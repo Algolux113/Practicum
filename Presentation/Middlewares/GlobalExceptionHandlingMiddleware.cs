@@ -78,10 +78,22 @@ public class GlobalExceptionHandlingMiddleware(
                 StatusCodes.Status404NotFound,
                 "Resource not found",
                 "https://tools.ietf.org/html/rfc7231#section-6.5.4"),
-            Domain.Exceptions.ValidationException => (
+            Domain.Exceptions.ValidationException or PastEventBookingException => (
                 StatusCodes.Status400BadRequest,
                 "Validation error",
                 "https://tools.ietf.org/html/rfc7231#section-6.5.1"),
+            InvalidCredentialsException => (
+                StatusCodes.Status401Unauthorized,
+                "Invalid credentials",
+                "https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2"),
+            ForbiddenOperationException => (
+                StatusCodes.Status403Forbidden,
+                "Forbidden",
+                "https://www.rfc-editor.org/rfc/rfc9110#section-15.5.4"),
+            ActiveBookingLimitExceededException or LoginAlreadyExistsException => (
+                StatusCodes.Status409Conflict,
+                "Conflict",
+                "https://www.rfc-editor.org/rfc/rfc9110#section-15.5.10"),
             ConcurrencyConflictException => (
                 StatusCodes.Status409Conflict,
                 "Concurrency conflict",

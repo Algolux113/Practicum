@@ -26,12 +26,14 @@ public class BookingConcurrencyTests(PostgreSqlFixture fixture)
         using var first = CreateProvider(database);
         using var second = CreateProvider(database);
 
+        var userIds = await AddUsersAsync(database, requests);
+
         var results = await Task.WhenAll(Enumerable.Range(0, requests).Select(index => Task.Run(async () =>
         {
             await using var scope = (index % 2 == 0 ? first : second).CreateAsyncScope();
             try
             {
-                return await scope.ServiceProvider.GetRequiredService<IBookingService>().CreateBookingAsync(eventItem.Id);
+                return await scope.ServiceProvider.GetRequiredService<IBookingService>().CreateBookingAsync(eventItem.Id, userIds[index]);
             }
             catch (NoAvailableSeatsException)
             {
@@ -50,10 +52,49 @@ public class BookingConcurrencyTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
+    public async Task ConcurrentBookingsForDifferentEvents_ShouldEnforcePerUserLimit()
+    {
+        await using var database = await fixture.CreateDatabaseAsync();
+        var firstEvent = await AddEventAsync(database, 20);
+        var secondEvent = await AddEventAsync(database, 20);
+        var userId = Assert.Single(await AddUsersAsync(database, 1));
+        using var first = CreateProvider(database);
+        using var second = CreateProvider(database);
+
+        var attempts = Enumerable.Range(0, 16).Select(async index =>
+        {
+            await using var scope = (index % 2 == 0 ? first : second).CreateAsyncScope();
+            var bookings = scope.ServiceProvider.GetRequiredService<IBookingService>();
+            try
+            {
+                return await bookings.CreateBookingAsync(index % 2 == 0 ? firstEvent.Id : secondEvent.Id, userId);
+            }
+            catch (ActiveBookingLimitExceededException)
+            {
+                return null;
+            }
+        });
+        var successful = (await Task.WhenAll(attempts)).OfType<Booking>().ToArray();
+        Assert.Equal(10, successful.Length);
+
+        await using var finalScope = first.CreateAsyncScope();
+        var service = finalScope.ServiceProvider.GetRequiredService<IBookingService>();
+        await service.ProcessPendingAsync(successful[0].Id);
+        await Assert.ThrowsAsync<ActiveBookingLimitExceededException>(() => service.CreateBookingAsync(firstEvent.Id, userId));
+        await service.CancelAsync(successful[0].Id, userId, UserRole.User);
+        await service.CreateBookingAsync(firstEvent.Id, userId);
+
+        var context = finalScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(10, await new BookingRepository(context).CountActiveAsync(userId));
+        Assert.Equal(30, await context.Events.SumAsync(eventItem => eventItem.AvailableSeats));
+    }
+
+    [Fact]
     public async Task StaleVersion_ShouldRejectEntireSaveIncludingBookingInsert()
     {
         await using var database = await fixture.CreateDatabaseAsync();
         var eventItem = await AddEventAsync(database, 1);
+        var userId = Assert.Single(await AddUsersAsync(database, 1));
         await using var first = database.CreateContext();
         await using var second = database.CreateContext();
         var firstEvent = (await new EventRepository(first).GetForUpdateAsync(eventItem.Id))!;
@@ -63,8 +104,8 @@ public class BookingConcurrencyTests(PostgreSqlFixture fixture)
         Assert.Equal(version, second.Entry(staleEvent).Property<Guid>("Version").CurrentValue);
         Assert.True(firstEvent.TryReserveSeats());
         Assert.True(staleEvent.TryReserveSeats());
-        first.Bookings.Add(Booking.Create(eventItem.Id));
-        second.Bookings.Add(Booking.Create(eventItem.Id));
+        first.Bookings.Add(Booking.Create(eventItem.Id, userId));
+        second.Bookings.Add(Booking.Create(eventItem.Id, userId));
 
         await first.SaveChangesAsync();
         await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => second.SaveChangesAsync());
@@ -77,18 +118,40 @@ public class BookingConcurrencyTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
+    public async Task RecoveryAfterAnotherWorkerConfirms_ShouldKeepBookingAndReservedSeat()
+    {
+        await using var database = await fixture.CreateDatabaseAsync();
+        var eventItem = await AddEventAsync(database, 1);
+        var userId = Assert.Single(await AddUsersAsync(database, 1));
+        using var provider = CreateProvider(database);
+        await using var processing = provider.CreateAsyncScope();
+        var processor = processing.ServiceProvider.GetRequiredService<IBookingService>();
+        var booking = await processor.CreateBookingAsync(eventItem.Id, userId);
+        Assert.Equal(BookingStatus.Confirmed, await processor.ProcessPendingAsync(booking.Id));
+
+        await using var recovery = provider.CreateAsyncScope();
+        var service = recovery.ServiceProvider.GetRequiredService<IBookingService>();
+        Assert.Equal(BookingStatus.Confirmed, await service.RejectPendingAsync(booking.Id));
+
+        var context = recovery.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(BookingStatus.Confirmed, (await context.Bookings.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(0, (await context.Events.AsNoTracking().SingleAsync()).AvailableSeats);
+    }
+
+    [Fact]
     public async Task ConcurrentRejections_ShouldReturnSeatOnlyOnce()
     {
         await using var database = await fixture.CreateDatabaseAsync();
         var eventItem = await AddEventAsync(database, 3);
         using var first = CreateProvider(database);
         using var second = CreateProvider(database);
+        var userId = Assert.Single(await AddUsersAsync(database, 1));
         Guid bookingId;
         await using (var scope = first.CreateAsyncScope())
         {
             var service = scope.ServiceProvider.GetRequiredService<IBookingService>();
-            bookingId = (await service.CreateBookingAsync(eventItem.Id)).Id;
-            await service.CreateBookingAsync(eventItem.Id);
+            bookingId = (await service.CreateBookingAsync(eventItem.Id, userId)).Id;
+            await service.CreateBookingAsync(eventItem.Id, userId);
         }
 
         var statuses = await Task.WhenAll(Enumerable.Range(0, 30).Select(async index =>
@@ -139,10 +202,19 @@ public class BookingConcurrencyTests(PostgreSqlFixture fixture)
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
+    private static async Task<Guid[]> AddUsersAsync(PostgreSqlTestDatabase database, int count)
+    {
+        await using var context = database.CreateContext();
+        var users = Enumerable.Range(0, count).Select(index => User.Create($"test-user-{index}", "test-hash")).ToArray();
+        context.Users.AddRange(users);
+        await context.SaveChangesAsync();
+        return users.Select(user => user.Id).ToArray();
+    }
+
     private static async Task<Event> AddEventAsync(PostgreSqlTestDatabase database, int capacity)
     {
         await using var context = database.CreateContext();
-        var eventItem = Event.Create("Конкурентность", null, DateTime.UtcNow, DateTime.UtcNow.AddHours(1), capacity);
+        var eventItem = Event.Create("Конкурентность", null, DateTime.UtcNow.AddHours(1), DateTime.UtcNow.AddHours(2), capacity);
         await new UnitOfWork(context).ExecuteAsync(async () =>
         {
             await new EventRepository(context).AddAsync(eventItem);

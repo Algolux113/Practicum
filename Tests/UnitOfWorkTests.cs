@@ -32,7 +32,7 @@ public class UnitOfWorkTests
         {
             var eventItem = (await events.GetForUpdateAsync(original.Id))!;
             eventItem.TryReserveSeats();
-            await bookings.AddAsync(Booking.Create(eventItem.Id));
+            await bookings.AddAsync(Booking.Create(eventItem.Id, Guid.NewGuid()));
             if (!failOnSave)
                 throw new InvalidOperationException("Сбой операции");
             return true;
