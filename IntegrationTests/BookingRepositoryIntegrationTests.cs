@@ -13,9 +13,9 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
     {
         // Arrange
         await using var database = await fixture.CreateDatabaseAsync();
-        var eventId = await AddEventAsync(database.Context);
+        var (eventId, userId) = await AddEventAsync(database.Context);
         var repository = new BookingRepository(database.Context);
-        var booking = Booking.Create(eventId);
+        var booking = Booking.Create(eventId, userId);
         await AddBookingsAsync(database.Context, repository, booking);
 
         // Act
@@ -36,10 +36,10 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
         // Arrange
         await using var database = await fixture.CreateDatabaseAsync();
         var repository = new BookingRepository(database.Context);
-        var eventId = await AddEventAsync(database.Context);
-        var pending = CreateBooking(eventId, BookingStatus.Pending);
-        var confirmed = CreateBooking(eventId, BookingStatus.Confirmed);
-        var rejected = CreateBooking(eventId, BookingStatus.Rejected);
+        var (eventId, userId) = await AddEventAsync(database.Context);
+        var pending = CreateBooking(eventId, userId, BookingStatus.Pending);
+        var confirmed = CreateBooking(eventId, userId, BookingStatus.Confirmed);
+        var rejected = CreateBooking(eventId, userId, BookingStatus.Rejected);
         await AddBookingsAsync(database.Context, repository, pending, confirmed, rejected);
 
         // Act
@@ -57,8 +57,8 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
         // Arrange
         await using var database = await fixture.CreateDatabaseAsync();
         var repository = new BookingRepository(database.Context);
-        var eventId = await AddEventAsync(database.Context);
-        var booking = CreateBooking(eventId, BookingStatus.Pending);
+        var (eventId, userId) = await AddEventAsync(database.Context);
+        var booking = CreateBooking(eventId, userId, BookingStatus.Pending);
         await AddBookingsAsync(database.Context, repository, booking);
 
         // Act
@@ -77,8 +77,8 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
         // Arrange
         await using var database = await fixture.CreateDatabaseAsync();
         var repository = new BookingRepository(database.Context);
-        var eventId = await AddEventAsync(database.Context);
-        var booking = CreateBooking(eventId, BookingStatus.Pending);
+        var (eventId, userId) = await AddEventAsync(database.Context);
+        var booking = CreateBooking(eventId, userId, BookingStatus.Pending);
         await AddBookingsAsync(database.Context, repository, booking);
 
         // Act
@@ -108,8 +108,8 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
         // Arrange
         await using var database = await fixture.CreateDatabaseAsync();
         var repository = new BookingRepository(database.Context);
-        var eventId = await AddEventAsync(database.Context);
-        var booking = CreateBooking(eventId, BookingStatus.Pending);
+        var (eventId, userId) = await AddEventAsync(database.Context);
+        var booking = CreateBooking(eventId, userId, BookingStatus.Pending);
         await AddBookingsAsync(database.Context, repository, booking);
 
         // Act
@@ -131,8 +131,8 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
         // Arrange
         await using var database = await fixture.CreateDatabaseAsync();
         var repository = new BookingRepository(database.Context);
-        var eventId = await AddEventAsync(database.Context);
-        var booking = CreateBooking(eventId, BookingStatus.Pending);
+        var (eventId, userId) = await AddEventAsync(database.Context);
+        var booking = CreateBooking(eventId, userId, BookingStatus.Pending);
         await AddBookingsAsync(database.Context, repository, booking);
 
         // Act
@@ -149,14 +149,16 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
         Assert.Equal(BookingStatus.Pending, (await repository.GetAsync(booking.Id))!.Status);
     }
 
-    private static async Task<Guid> AddEventAsync(DbContext context)
+    private static async Task<(Guid EventId, Guid UserId)> AddEventAsync(AppDbContext context)
     {
         var eventItem = Event.Create(
             "Событие для бронирований", null,
             DateTime.UtcNow, DateTime.UtcNow.AddHours(1), 20);
-        context.Add(eventItem);
+        var user = User.Create("test-user", "test-hash");
+        context.Users.Add(user);
+        context.Events.Add(eventItem);
         await context.SaveChangesAsync();
-        return eventItem.Id;
+        return (eventItem.Id, user.Id);
     }
 
     private static async Task AddBookingsAsync(AppDbContext context, BookingRepository repository, params Booking[] bookings)
@@ -169,9 +171,9 @@ public sealed class BookingRepositoryIntegrationTests(PostgreSqlFixture fixture)
         });
     }
 
-    private static Booking CreateBooking(Guid eventId, BookingStatus status)
+    private static Booking CreateBooking(Guid eventId, Guid userId, BookingStatus status)
     {
-        var booking = Booking.Create(eventId);
+        var booking = Booking.Create(eventId, userId);
         if (status == BookingStatus.Confirmed)
             booking.Confirm();
         if (status == BookingStatus.Rejected)
