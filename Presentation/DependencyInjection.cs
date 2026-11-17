@@ -1,11 +1,41 @@
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
+using System.Text;
+using System.IdentityModel.Tokens.Jwt;
+using Infrastructure.Security;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
 
 namespace Presentation;
 
 public static class DependencyInjection
 {
+    public static IServiceCollection AddJwtAuthentication(this IServiceCollection services, IConfigurationSection section)
+    {
+        var jwt = section.Get<JwtOptions>() ?? new JwtOptions();
+        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+            .AddJwtBearer(options =>
+            {
+                options.MapInboundClaims = false;
+                var key = Encoding.UTF8.GetBytes(jwt.Secret);
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    IssuerSigningKey = key.Length >= 32 ? new SymmetricSecurityKey(key) : null,
+                    ValidateIssuerSigningKey = true,
+                    ValidIssuer = jwt.Issuer,
+                    ValidAudience = jwt.Audience,
+                    ValidAlgorithms = [SecurityAlgorithms.HmacSha256],
+                    NameClaimType = JwtRegisteredClaimNames.UniqueName,
+                    RoleClaimType = "role",
+                    ClockSkew = TimeSpan.Zero
+                };
+            });
+        return services;
+    }
+
     public static IServiceCollection AddPresentation(this IServiceCollection services)
     {
         services.AddControllers()
@@ -42,8 +72,35 @@ public static class DependencyInjection
             };
         });
 
-        services.AddOpenApi();
-
+        services.AddOpenApi(options =>
+        {
+            const string schemeId = JwtBearerDefaults.AuthenticationScheme;
+            options.AddDocumentTransformer((document, _, _) =>
+            {
+                document.Components ??= new OpenApiComponents();
+                document.Components.SecuritySchemes ??= new Dictionary<string, IOpenApiSecurityScheme>();
+                document.Components.SecuritySchemes[schemeId] = new OpenApiSecurityScheme
+                {
+                    Type = SecuritySchemeType.Http,
+                    Scheme = "bearer",
+                    BearerFormat = "JWT"
+                };
+                return Task.CompletedTask;
+            });
+            options.AddOperationTransformer((operation, context, _) =>
+            {
+                var metadata = context.Description.ActionDescriptor.EndpointMetadata;
+                if (metadata.OfType<IAuthorizeData>().Any() && !metadata.OfType<IAllowAnonymous>().Any())
+                {
+                    operation.Security ??= [];
+                    operation.Security.Add(new OpenApiSecurityRequirement
+                    {
+                        [new OpenApiSecuritySchemeReference(schemeId, context.Document)] = []
+                    });
+                }
+                return Task.CompletedTask;
+            });
+        });
 
         return services;
     }
