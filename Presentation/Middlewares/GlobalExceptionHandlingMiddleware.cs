@@ -83,9 +83,9 @@ public class GlobalExceptionHandlingMiddleware(
                 "Validation error",
                 "https://tools.ietf.org/html/rfc7231#section-6.5.1"),
             InvalidCredentialsException => (
-                StatusCodes.Status401Unauthorized,
+                StatusCodes.Status400BadRequest,
                 "Invalid credentials",
-                "https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2"),
+                "https://www.rfc-editor.org/rfc/rfc9110#section-15.5.1"),
             ForbiddenOperationException => (
                 StatusCodes.Status403Forbidden,
                 "Forbidden",

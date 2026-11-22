@@ -18,6 +18,17 @@ public sealed class UserRepository(AppDbContext context) : IUserRepository
         return await context.Users.SingleOrDefaultAsync(user => user.Id == id, cancellationToken);
     }
 
+    public async Task<bool> LockUserForBookingAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var user = await GetForUpdateAsync(userId, cancellationToken);
+        if (user is null)
+            return false;
+
+        // Версия пользователя синхронизирует создание броней даже для разных событий.
+        context.Entry(user).Property("Version").IsModified = true;
+        return true;
+    }
+
     public async Task AddAsync(User user, CancellationToken cancellationToken = default) =>
         await context.Users.AddAsync(user, cancellationToken);
 }

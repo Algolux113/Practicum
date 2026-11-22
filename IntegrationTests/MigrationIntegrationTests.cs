@@ -38,7 +38,8 @@ public sealed class MigrationIntegrationTests(PostgreSqlFixture fixture)
         Assert.Equal(bookingId, booking.Id);
         Assert.Equal(Guid.Empty, context.Entry(eventItem).Property<Guid>("Version").CurrentValue);
         Assert.Equal(Guid.Empty, context.Entry(booking).Property<Guid>("Version").CurrentValue);
-        var service = new BookingService(new BookingRepository(context), new EventRepository(context), new UnitOfWork(context));
+        var service = new BookingService(
+            new BookingRepository(context), new EventRepository(context), new UserRepository(context), new UnitOfWork(context));
         Assert.Equal(Guid.Empty, booking.UserId);
         var legacyUser = await context.Users.FindAsync(booking.UserId);
         Assert.Equal("", legacyUser!.PasswordHash);
@@ -51,6 +52,15 @@ public sealed class MigrationIntegrationTests(PostgreSqlFixture fixture)
         Assert.Equal(2, await context.Bookings.CountAsync());
         Assert.Equal(0, (await context.Events.AsNoTracking().SingleAsync()).AvailableSeats);
         Assert.NotEqual(Guid.Empty, context.Entry(eventItem).Property<Guid>("Version").CurrentValue);
+
+        await context.GetService<IMigrator>().MigrateAsync("20261029090000_AddConcurrencyVersions");
+
+        Assert.True(await QueryBooleanAsync(context, "SELECT to_regclass('public.users') IS NULL"));
+        Assert.Equal(0, await QueryIntAsync(context, """
+            SELECT COUNT(*)::int FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'bookings' AND column_name = 'user_id'
+            """));
+        Assert.Equal(2, await QueryIntAsync(context, "SELECT COUNT(*)::int FROM bookings"));
     }
 
     [Fact]
@@ -66,7 +76,7 @@ public sealed class MigrationIntegrationTests(PostgreSqlFixture fixture)
         await database.Context.Database.MigrateAsync();
 
         // Assert: миграция применена и обе таблицы созданы.
-        Assert.Equal(new[] { "20261013060334_InitialCreate", "20261029090000_AddConcurrencyVersions", "20261117090000_AddBookingUserId", "20261117100000_AddUsersAndBookingForeignKey" },
+        Assert.Equal(new[] { "20261013060334_InitialCreate", "20261029090000_AddConcurrencyVersions", "20261117100000_AddUsersAndBookingForeignKey" },
             await database.Context.Database.GetAppliedMigrationsAsync());
         Assert.Equal(2, await QueryIntAsync(database.Context, """
             SELECT COUNT(*)::int FROM information_schema.columns

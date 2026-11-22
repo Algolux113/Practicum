@@ -11,6 +11,13 @@ namespace Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.AddColumn<Guid>(
+                name: "user_id",
+                table: "bookings",
+                type: "uuid",
+                nullable: false,
+                defaultValue: Guid.Empty);
+
             migrationBuilder.CreateTable(
                 name: "users",
                 columns: table => new
@@ -65,6 +72,10 @@ namespace Infrastructure.Migrations
 
             migrationBuilder.DropIndex(
                 name: "IX_bookings_user_id",
+                table: "bookings");
+
+            migrationBuilder.DropColumn(
+                name: "user_id",
                 table: "bookings");
         }
     }

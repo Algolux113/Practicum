@@ -26,6 +26,7 @@ public class BookingProcessingTests
         services.AddScoped<IBookingRepository, BookingRepository>();
         services.AddScoped<IEventService, EventService>();
         services.AddScoped<IBookingService, BookingService>();
+        services.AddScoped<IUserRepository, UserRepository>();
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         Guid bookingId;
         Guid eventId;

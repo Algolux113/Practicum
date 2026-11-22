@@ -7,6 +7,7 @@ namespace Application.Services;
 public class BookingService(
     IBookingRepository bookingRepository,
     IEventRepository eventRepository,
+    IUserRepository userRepository,
     IUnitOfWork unitOfWork) : IBookingService
 {
     private const int ActiveBookingLimit = 10;
@@ -28,7 +29,7 @@ public class BookingService(
                 throw new PastEventBookingException();
 
             var booking = Booking.Create(eventId, userId);
-            if (!await bookingRepository.TrackUserForBookingAsync(userId, cancellationToken))
+            if (!await userRepository.LockUserForBookingAsync(userId, cancellationToken))
                 throw new NotFoundException("User", userId);
             if (await bookingRepository.CountActiveAsync(userId, cancellationToken) >= ActiveBookingLimit)
                 throw new ActiveBookingLimitExceededException(ActiveBookingLimit);

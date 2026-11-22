@@ -31,7 +31,8 @@ public static class DependencyInjection
                                  !string.IsNullOrWhiteSpace(options.Audience),
                 "Издатель и аудитория JWT обязательны.")
             .Validate(options => options.LifetimeMinutes > 0,
-                "Время жизни JWT должно быть положительным.");
+                "Время жизни JWT должно быть положительным.")
+            .ValidateOnStart();
 
         return services;
     }
@@ -40,6 +41,7 @@ public static class DependencyInjection
     {
         using var scope = services.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        context.Database.Migrate();
+        if (context.Database.IsRelational())
+            context.Database.Migrate();
     }
 }

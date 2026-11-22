@@ -5,12 +5,47 @@ using Domain.Models;
 using Infrastructure;
 using Infrastructure.Security;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 namespace Tests;
 
 public class SecurityServicesTests
 {
+    [Theory]
+    [InlineData("Development", true)]
+    [InlineData("Production", false)]
+    public async Task JwtConfiguration_ShouldValidateAtHostStartup(string environment, bool starts)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.Sources.Clear();
+        builder.Configuration
+            .SetBasePath(Path.GetFullPath("../../../../Presentation", AppContext.BaseDirectory))
+            .AddJsonFile("appsettings.json")
+            .AddJsonFile($"appsettings.{environment}.json", optional: true);
+        builder.Services.AddInfrastructure(builder.Configuration.GetConnectionString("DefaultConnection"));
+        builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+        // Проверяем запуск хоста и JWT независимо от PostgreSQL и фоновой обработки.
+        builder.Services.RemoveAll<IHostedService>();
+        using var host = builder.Build();
+
+        if (!starts)
+        {
+            var error = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+            Assert.Contains("Секрет JWT должен содержать не менее 32 байт", error.Message);
+            return;
+        }
+
+        await host.StartAsync();
+        var user = User.Create("test-user", "test-hash");
+        var token = host.Services.GetRequiredService<IJwtTokenService>().GenerateToken(user);
+        Assert.Equal(user.Id.ToString(), new JwtSecurityTokenHandler().ReadJwtToken(token).Subject);
+        await host.StopAsync();
+    }
+
     [Fact]
     public void PasswordHasher_ShouldUseUniqueSaltsAndVerifyLegacyHashes()
     {

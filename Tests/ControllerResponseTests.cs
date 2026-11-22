@@ -39,7 +39,7 @@ public class ControllerResponseTests
 
         var response = await controller.Register(new("test-admin", "test-password", UserRole.Admin), CancellationToken.None);
 
-        Assert.Equal(StatusCodes.Status201Created, Assert.IsType<ObjectResult>(response.Result).StatusCode);
+        Assert.IsType<NoContentResult>(response);
     }
 
     [Fact]
