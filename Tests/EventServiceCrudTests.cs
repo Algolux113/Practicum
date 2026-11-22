@@ -39,13 +39,13 @@ public partial class EventServiceIntegrationTests
         var service = CreateEventService();
         var dto = new EventDTO
         {
-            Title = "Событие", StartAt = DateTime.UtcNow,
-            EndAt = DateTime.UtcNow.AddHours(1), TotalSeats = 3
+            Title = "Событие", StartAt = DateTime.UtcNow.AddHours(1),
+            EndAt = DateTime.UtcNow.AddHours(2), TotalSeats = 3
         };
         var created = await service.CreateAsync(dto);
         var bookingService = _scope.ServiceProvider.GetRequiredService<IBookingService>();
-        await bookingService.CreateBookingAsync(created.Id);
-        await bookingService.CreateBookingAsync(created.Id);
+        await bookingService.CreateBookingAsync(created.Id, _userId);
+        await bookingService.CreateBookingAsync(created.Id, _userId);
         dto.TotalSeats = 1;
 
         // Act / Assert
@@ -78,11 +78,11 @@ public partial class EventServiceIntegrationTests
     {
         // Arrange
         var eventService = CreateEventService();
-        var eventItem = Event.Create("Событие", null, DateTime.UtcNow, DateTime.UtcNow.AddHours(1), 3);
+        var eventItem = Event.Create("Событие", null, DateTime.UtcNow.AddHours(1), DateTime.UtcNow.AddHours(2), 3);
         eventItem = await eventService.CreateAsync(eventItem.ToDto());
         using var otherScope = _serviceProvider.CreateScope();
         var bookingService = otherScope.ServiceProvider.GetRequiredService<IBookingService>();
-        await bookingService.CreateBookingAsync(eventItem.Id);
+        await bookingService.CreateBookingAsync(eventItem.Id, _userId);
 
         // Act
         var update = eventItem.ToDto();

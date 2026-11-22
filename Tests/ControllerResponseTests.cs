@@ -1,6 +1,9 @@
+using System.Security.Claims;
 using Application.DTOs;
 using Application.Interfaces;
 using Domain.Models;
+using Domain.Exceptions;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Moq;
@@ -10,6 +13,35 @@ namespace Tests;
 
 public class ControllerResponseTests
 {
+    [Theory]
+    [InlineData("Production")]
+    [InlineData("Staging")]
+    public async Task Register_ShouldRejectAdminOutsideDevelopment(string environmentName)
+    {
+        var users = new Mock<IUserService>(MockBehavior.Strict);
+        var environment = new Mock<IWebHostEnvironment>();
+        environment.SetupGet(host => host.EnvironmentName).Returns(environmentName);
+        var controller = new AuthController(users.Object, environment.Object);
+
+        await Assert.ThrowsAsync<ForbiddenOperationException>(() =>
+            controller.Register(new("test-admin", "test-password", UserRole.Admin), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Register_ShouldAllowTestAdminInDevelopment()
+    {
+        var users = new Mock<IUserService>(MockBehavior.Strict);
+        var environment = new Mock<IWebHostEnvironment>();
+        environment.SetupGet(host => host.EnvironmentName).Returns("Development");
+        var controller = new AuthController(users.Object, environment.Object);
+        users.Setup(service => service.RegisterAsync("test-admin", "test-password", UserRole.Admin, CancellationToken.None))
+            .ReturnsAsync(Guid.NewGuid());
+
+        var response = await controller.Register(new("test-admin", "test-password", UserRole.Admin), CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(response);
+    }
+
     [Fact]
     public async Task EventEndpoints_ShouldMapEntitiesAndPreservePaginationAndLocation()
     {
@@ -42,14 +74,17 @@ public class ControllerResponseTests
     [Fact]
     public async Task BookingEndpoints_ShouldMapEntityAndPreserveAcceptedLocation()
     {
-        var booking = Booking.Create(Guid.NewGuid());
+        var booking = Booking.Create(Guid.NewGuid(), Guid.NewGuid());
         var service = new Mock<IBookingService>();
-        service.Setup(s => s.GetAsync(booking.Id, It.IsAny<CancellationToken>())).ReturnsAsync(booking);
-        service.Setup(s => s.CreateBookingAsync(booking.EventId, It.IsAny<CancellationToken>())).ReturnsAsync(booking);
+        service.Setup(s => s.GetAsync(booking.Id, booking.UserId, UserRole.User, It.IsAny<CancellationToken>())).ReturnsAsync(booking);
+        service.Setup(s => s.CreateBookingAsync(booking.EventId, booking.UserId, It.IsAny<CancellationToken>())).ReturnsAsync(booking);
         var controller = new BookingController(service.Object)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };
+
+        controller.HttpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim("sub", booking.UserId.ToString())], "Bearer"));
 
         var fetched = Assert.IsType<OkObjectResult>((await controller.Get(booking.Id)).Result);
         var accepted = Assert.IsType<AcceptedResult>(await controller.Book(booking.EventId));

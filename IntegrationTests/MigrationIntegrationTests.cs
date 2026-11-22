@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Infrastructure.DataAccess.Repositories;
 using Application.Services;
+using Domain.Models;
 
 namespace IntegrationTests;
 
@@ -17,7 +18,7 @@ public sealed class MigrationIntegrationTests(PostgreSqlFixture fixture)
         await database.Context.GetService<IMigrator>().MigrateAsync("20261013060334_InitialCreate");
         var eventId = Guid.NewGuid();
         var bookingId = Guid.NewGuid();
-        var start = DateTime.UtcNow;
+        var start = DateTime.UtcNow.AddHours(1);
         var end = start.AddHours(1);
         await database.Context.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO events (id, title, start_at, end_at, total_seats, available_seats, is_deleted)
@@ -37,11 +38,29 @@ public sealed class MigrationIntegrationTests(PostgreSqlFixture fixture)
         Assert.Equal(bookingId, booking.Id);
         Assert.Equal(Guid.Empty, context.Entry(eventItem).Property<Guid>("Version").CurrentValue);
         Assert.Equal(Guid.Empty, context.Entry(booking).Property<Guid>("Version").CurrentValue);
-        var service = new BookingService(new BookingRepository(context), new EventRepository(context), new UnitOfWork(context));
-        await service.CreateBookingAsync(eventId);
+        var service = new BookingService(
+            new BookingRepository(context), new EventRepository(context), new UserRepository(context), new UnitOfWork(context));
+        Assert.Equal(Guid.Empty, booking.UserId);
+        var legacyUser = await context.Users.FindAsync(booking.UserId);
+        Assert.Equal("", legacyUser!.PasswordHash);
+        var user = User.Create("test-user", "test-hash");
+        context.Users.Add(user);
+        await context.SaveChangesAsync();
+        var userId = user.Id;
+        var created = await service.CreateBookingAsync(eventId, userId);
+        Assert.Equal(userId, (await context.Bookings.AsNoTracking().SingleAsync(b => b.Id == created.Id)).UserId);
         Assert.Equal(2, await context.Bookings.CountAsync());
         Assert.Equal(0, (await context.Events.AsNoTracking().SingleAsync()).AvailableSeats);
         Assert.NotEqual(Guid.Empty, context.Entry(eventItem).Property<Guid>("Version").CurrentValue);
+
+        await context.GetService<IMigrator>().MigrateAsync("20261029090000_AddConcurrencyVersions");
+
+        Assert.True(await QueryBooleanAsync(context, "SELECT to_regclass('public.users') IS NULL"));
+        Assert.Equal(0, await QueryIntAsync(context, """
+            SELECT COUNT(*)::int FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'bookings' AND column_name = 'user_id'
+            """));
+        Assert.Equal(2, await QueryIntAsync(context, "SELECT COUNT(*)::int FROM bookings"));
     }
 
     [Fact]
@@ -57,7 +76,7 @@ public sealed class MigrationIntegrationTests(PostgreSqlFixture fixture)
         await database.Context.Database.MigrateAsync();
 
         // Assert: миграция применена и обе таблицы созданы.
-        Assert.Equal(new[] { "20261013060334_InitialCreate", "20261029090000_AddConcurrencyVersions" },
+        Assert.Equal(new[] { "20261013060334_InitialCreate", "20261029090000_AddConcurrencyVersions", "20261117100000_AddUsersAndBookingForeignKey" },
             await database.Context.Database.GetAppliedMigrationsAsync());
         Assert.Equal(2, await QueryIntAsync(database.Context, """
             SELECT COUNT(*)::int FROM information_schema.columns

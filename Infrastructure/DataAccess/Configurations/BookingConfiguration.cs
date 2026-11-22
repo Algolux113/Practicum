@@ -15,6 +15,7 @@ public class BookingConfiguration : IEntityTypeConfiguration<Booking>
         builder.Property<Guid>("Version").HasColumnName("version").IsConcurrencyToken();
 
         builder.Property(b => b.EventId).HasColumnName("event_id").IsRequired();
+        builder.Property(b => b.UserId).HasColumnName("user_id").IsRequired();
         builder.Property(b => b.Status).HasColumnName("status").HasConversion<string>().IsRequired().HasMaxLength(20);
         builder.Property(b => b.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.Property(b => b.ProcessedAt).HasColumnName("processed_at").IsRequired(false);
@@ -23,5 +24,10 @@ public class BookingConfiguration : IEntityTypeConfiguration<Booking>
             .WithMany(e => e.Bookings)
             .HasForeignKey(b => b.EventId)
             .IsRequired();
+
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(b => b.UserId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

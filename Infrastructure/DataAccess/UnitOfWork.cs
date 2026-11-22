@@ -1,6 +1,8 @@
 using Application.Interfaces;
 using Domain.Exceptions;
+using Infrastructure.DataAccess.Configurations;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Infrastructure.DataAccess;
 
@@ -28,6 +30,15 @@ public sealed class UnitOfWork(AppDbContext context) : IUnitOfWork
                 if (attempt >= MaxAttempts)
                     throw new ConcurrencyConflictException();
                 await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(1, 25) * attempt), cancellationToken);
+            }
+            catch (DbUpdateException ex) when (ex.InnerException is PostgresException
+                   {
+                       SqlState: PostgresErrorCodes.UniqueViolation,
+                       ConstraintName: UserConfiguration.LoginIndexName
+                   })
+            {
+                context.ChangeTracker.Clear();
+                throw new LoginAlreadyExistsException();
             }
             catch
             {

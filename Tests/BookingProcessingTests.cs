@@ -26,16 +26,23 @@ public class BookingProcessingTests
         services.AddScoped<IBookingRepository, BookingRepository>();
         services.AddScoped<IEventService, EventService>();
         services.AddScoped<IBookingService, BookingService>();
+        services.AddScoped<IUserRepository, UserRepository>();
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         Guid bookingId;
         Guid eventId;
+        Guid userId;
         using (var scope = provider.CreateScope())
         {
-            var eventItem = Event.Create("Сбой подтверждения", null, DateTime.UtcNow, DateTime.UtcNow.AddHours(1), 1);
+            var eventItem = Event.Create("Сбой подтверждения", null, DateTime.UtcNow.AddHours(1), DateTime.UtcNow.AddHours(2), 1);
             eventItem = await scope.ServiceProvider.GetRequiredService<IEventService>().CreateAsync(eventItem.ToDto());
             eventId = eventItem.Id;
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var user = User.Create("test-user", "test-hash");
+            context.Users.Add(user);
+            await context.SaveChangesAsync();
+            userId = user.Id;
             bookingId = (await scope.ServiceProvider.GetRequiredService<IBookingService>()
-                .CreateBookingAsync(eventId)).Id;
+                .CreateBookingAsync(eventId, user.Id)).Id;
         }
 
         using var worker = new BookingProcessingService(
@@ -53,7 +60,7 @@ public class BookingProcessingTests
         using var verification = provider.CreateScope();
         var bookings = verification.ServiceProvider.GetRequiredService<IBookingService>();
         var events = verification.ServiceProvider.GetRequiredService<IEventService>();
-        Assert.Equal(BookingStatus.Rejected, (await bookings.GetAsync(bookingId)).Status);
+        Assert.Equal(BookingStatus.Rejected, (await bookings.GetAsync(bookingId, userId, UserRole.User)).Status);
         Assert.Equal(1, (await events.GetAsync(eventId)).AvailableSeats);
         Assert.NotNull(fault.FailedContext);
         Assert.NotEqual(fault.FailedContext, fault.RecoveryContext);

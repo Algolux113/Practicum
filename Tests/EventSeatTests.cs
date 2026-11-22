@@ -8,7 +8,7 @@ public class EventSeatTests
     [Fact]
     public void Entities_ShouldExposeNoPublicConstructorsOrSetters()
     {
-        foreach (var type in new[] { typeof(Event), typeof(Booking) })
+        foreach (var type in new[] { typeof(Event), typeof(Booking), typeof(User) })
         {
             Assert.Empty(type.GetConstructors());
             Assert.All(type.GetProperties(), property => Assert.False(property.SetMethod?.IsPublic == true));
@@ -45,15 +45,15 @@ public class EventSeatTests
         Assert.Equal(start.AddHours(2), eventItem.EndAt);
         Assert.Equal(4, eventItem.TotalSeats);
         Assert.Equal(1, eventItem.AvailableSeats);
-        Assert.Throws<NotSupportedException>(() => ((ICollection<Booking>)eventItem.Bookings).Add(Booking.Create(id)));
+        Assert.Throws<NotSupportedException>(() => ((ICollection<Booking>)eventItem.Bookings).Add(Booking.Create(id, Guid.NewGuid())));
     }
 
     [Fact]
     public void BookingFactoryAndTransitions_ShouldPreserveIdentityAndRejectReactivation()
     {
-        Assert.Throws<ValidationException>(() => Booking.Create(Guid.Empty));
+        Assert.Throws<ValidationException>(() => Booking.Create(Guid.Empty, Guid.NewGuid()));
         var eventId = Guid.NewGuid();
-        var booking = Booking.Create(eventId);
+        var booking = Booking.Create(eventId, Guid.NewGuid());
         var id = booking.Id;
         Assert.NotEqual(Guid.Empty, id);
         Assert.Equal(eventId, booking.EventId);
@@ -71,6 +71,29 @@ public class EventSeatTests
         Assert.Throws<ValidationException>(() => booking.Confirm());
         Assert.Equal(BookingStatus.Rejected, booking.Status);
         Assert.Equal(id, booking.Id);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Cancel_ShouldKeepStatusAndTimestampOnRepeat(bool confirmed)
+    {
+        var userId = Guid.NewGuid();
+        Assert.Throws<ValidationException>(() => Booking.Create(Guid.NewGuid(), Guid.Empty));
+        var booking = Booking.Create(Guid.NewGuid(), userId);
+        if (confirmed)
+            booking.Confirm();
+
+        booking.Cancel();
+        var cancelledAt = booking.ProcessedAt;
+        booking.Cancel();
+        booking.Reject();
+
+        Assert.Throws<ValidationException>(booking.Confirm);
+        Assert.Equal(userId, booking.UserId);
+        Assert.Equal(BookingStatus.Cancelled, booking.Status);
+        Assert.NotNull(cancelledAt);
+        Assert.Equal(cancelledAt, booking.ProcessedAt);
     }
 
     [Theory]
